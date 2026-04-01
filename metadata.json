@@ -1,0 +1,7 @@
+{
+  "name": "Remix: over10images: AI Auto-Blog Writer",
+  "description": "Generate SEO-optimized blog posts from photos and simple inputs, with automatic publishing features.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
