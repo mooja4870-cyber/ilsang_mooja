@@ -61,7 +61,31 @@ function calculatePostInfo(imageCount: number) {
 
 function normalizeBodyWithSentenceBreaks(body: string) {
   const normalized = body.replace(/\s+/g, ' ').trim();
-  const limited = normalized.length > 130 ? normalized.slice(0, 130).trim() : normalized;
+  const PREFERRED_MAX = 120;
+  const HARD_MAX = 150;
+  let limited = normalized;
+  if (normalized.length > PREFERRED_MAX) {
+    const tailWindow = normalized.slice(PREFERRED_MAX, HARD_MAX + 1);
+    const sentenceEndOffset = tailWindow.search(/[.!?。！？]/);
+    if (sentenceEndOffset >= 0) {
+      limited = normalized.slice(0, PREFERRED_MAX + sentenceEndOffset + 1).trim();
+    } else {
+      limited = normalized.slice(0, HARD_MAX).trim();
+    }
+  }
+  const paddingPool = [
+    ' 오늘의 공기가 한층 더 포근하게 느껴졌다.',
+    ' 작은 장면 하나가 오래 마음에 남았다.',
+    ' 익숙한 풍경도 새롭게 보이는 순간이었다.',
+  ];
+  let paddingIndex = 0;
+  while (limited.length < 80 && paddingIndex < 10) {
+    const pad = paddingPool[paddingIndex % paddingPool.length];
+    const available = PREFERRED_MAX - limited.length;
+    if (available <= 0) break;
+    limited = `${limited}${pad.slice(0, available)}`.trim();
+    paddingIndex += 1;
+  }
   return limited.replace(/([.!?。！？])\s*/g, '$1\n').replace(/\n{2,}/g, '\n').trim();
 }
 
@@ -126,10 +150,19 @@ function extractKeywords(text: string, maxCount = 3) {
     counts.set(token, (counts.get(token) || 0) + 1);
   });
 
-  return Array.from(counts.entries())
+  const topKeywords = Array.from(counts.entries())
     .sort((a, b) => b[1] - a[1] || b[0].length - a[0].length)
     .map(([token]) => token)
     .slice(0, maxCount);
+
+  const fallbackKeywords = ['분위기', '감성', '기록'];
+  const result = [...topKeywords];
+  for (const fallback of fallbackKeywords) {
+    if (result.length >= 2) break;
+    if (!result.includes(fallback)) result.push(fallback);
+  }
+
+  return result.slice(0, maxCount);
 }
 
 function escapeRegExp(text: string) {
@@ -146,6 +179,7 @@ function parseSection(sectionText: string, index: number): StructuredSectionDraf
   const subtitle = firstLine
     .replace(/^#+\s*/, '')
     .replace(/^■\s*/, '')
+    .replace(/\s*■$/, '')
     .replace(/^소제목[:：]?\s*/i, '')
     .trim() || `소제목 ${index + 1}`;
 
@@ -192,7 +226,7 @@ function buildHashtags(seoKeywords: string[]) {
   return unique.slice(0, 9);
 }
 
-function renderHighlightedLine(line: string, keywords: string[]) {
+function renderHighlightedLine(line: string, keywords: string[], keywordColorMap: Map<string, string>) {
   if (!line) return line;
   const usableKeywords = keywords.filter((keyword) => keyword.trim().length > 0);
   if (usableKeywords.length === 0) return line;
@@ -202,7 +236,7 @@ function renderHighlightedLine(line: string, keywords: string[]) {
 
   return parts.map((part, idx) =>
     usableKeywords.includes(part) ? (
-      <span key={`kw-${idx}`} style={{ backgroundColor: '#FFFF00' }}>
+      <span key={`kw-${idx}`} style={{ backgroundColor: keywordColorMap.get(part) || '#FFFF00' }}>
         {part}
       </span>
     ) : (
@@ -212,10 +246,16 @@ function renderHighlightedLine(line: string, keywords: string[]) {
 }
 
 function renderHighlightedBody(body: string, keywords: string[]) {
+  const colorPalette = ['#FFF176', '#A5D6A7', '#81D4FA'];
+  const keywordColorMap = new Map<string, string>();
+  keywords.slice(0, 3).forEach((keyword, index) => {
+    keywordColorMap.set(keyword, colorPalette[index % colorPalette.length]);
+  });
+
   const lines = body.split('\n');
   return lines.map((line, idx) => (
     <React.Fragment key={`line-${idx}`}>
-      {renderHighlightedLine(line, keywords)}
+      {renderHighlightedLine(line, keywords, keywordColorMap)}
       {idx < lines.length - 1 && <br />}
     </React.Fragment>
   ));
@@ -239,11 +279,16 @@ export default function App() {
   const [isStep1Confirmed, setIsStep1Confirmed] = useState(false);
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
-    if (images.length + acceptedFiles.length > MAX_IMAGES) {
-      alert('첨부 가능한 사진은 최대 10장까지입니다.');
+    const remainingSlots = MAX_IMAGES - images.length;
+    if (remainingSlots <= 0) {
+      alert('이미지는 최대 10개까지 첨부 가능합니다.');
+      return;
     }
 
-    const remainingSlots = MAX_IMAGES - images.length;
+    if (acceptedFiles.length > remainingSlots) {
+      alert(`이미지는 최대 10개까지 첨부 가능합니다. 처음 ${remainingSlots}개만 첨부합니다.`);
+    }
+
     const filesToProcess = acceptedFiles.slice(0, remainingSlots);
 
     if (filesToProcess.length === 0) return;
@@ -292,7 +337,6 @@ export default function App() {
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
     accept: { 'image/*': [] },
-    maxFiles: MAX_IMAGES,
     multiple: true,
     disabled: images.length >= MAX_IMAGES
   } as any);
@@ -330,11 +374,11 @@ export default function App() {
     const contentLines: string[] = [];
 
     if (quoteSection.quote) {
-      contentLines.push(`"${quoteSection.quote}"\n— ${quoteSection.philosopher} —`);
+      contentLines.push(`"${quoteSection.quote}"\n\n- ${quoteSection.philosopher} -`);
     }
 
     structuredSections.forEach((section) => {
-      contentLines.push(`■ ${section.subtitle}\n${section.body}`);
+      contentLines.push(`■ ${section.subtitle} ■\n${section.body}`);
     });
 
     if (hashtags.length > 0) {
@@ -345,7 +389,7 @@ export default function App() {
       title: post.title,
       content: contentLines.join('\n\n'),
       images,
-      quote: `"${quoteSection.quote}"\n— ${quoteSection.philosopher} —`,
+      quote: `"${quoteSection.quote}"\n\n- ${quoteSection.philosopher} -`,
       sections: structuredSections,
       hashtags,
       blogType: 'Naver',
@@ -770,7 +814,8 @@ export default function App() {
                   <p className="text-lg font-serif italic text-center text-gray-700 leading-relaxed whitespace-pre-wrap" style={{ wordBreak: 'keep-all', overflowWrap: 'break-word' }}>
                     "{quoteSection?.quote || ''}"
                     {'\n'}
-                    — {quoteSection?.philosopher || '작자 미상'} —
+                    {'\n'}
+                    - {quoteSection?.philosopher || '작자 미상'} -
                   </p>
                 </div>
               </header>
@@ -789,7 +834,7 @@ export default function App() {
                       </div>
                     )}
                     <h3 className="text-center font-bold text-[133%]" style={{ wordBreak: 'keep-all', overflowWrap: 'break-word' }}>
-                      ■ {section.subtitle}
+                      ■ {section.subtitle} ■
                     </h3>
                     <p className="text-gray-700 leading-relaxed text-lg whitespace-pre-wrap text-center" style={{ wordBreak: 'keep-all', overflowWrap: 'break-word' }}>
                       {renderHighlightedBody(section.body, section.keywords)}

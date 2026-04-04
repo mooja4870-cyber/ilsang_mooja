@@ -1272,6 +1272,7 @@ function sanitizeSubtitleText(text: string, sectionIndex: number) {
   const normalized = sanitizeContent(text)
     .replace(/^#+\s*/, "")
     .replace(/^■\s*/, "")
+    .replace(/\s*■$/, "")
     .replace(/^소제목[:：]?\s*/i, "")
     .trim();
   return normalized || `소제목 ${sectionIndex + 1}`;
@@ -1279,7 +1280,31 @@ function sanitizeSubtitleText(text: string, sectionIndex: number) {
 
 function normalizeBodyTextForSection(text: string) {
   const normalized = sanitizeContent(text).replace(/\s+/g, " ").trim();
-  const limited = normalized.length > 130 ? normalized.slice(0, 130).trim() : normalized;
+  const PREFERRED_MAX = 120;
+  const HARD_MAX = 150;
+  let limited = normalized;
+  if (normalized.length > PREFERRED_MAX) {
+    const tailWindow = normalized.slice(PREFERRED_MAX, HARD_MAX + 1);
+    const sentenceEndOffset = tailWindow.search(/[.!?。！？]/);
+    if (sentenceEndOffset >= 0) {
+      limited = normalized.slice(0, PREFERRED_MAX + sentenceEndOffset + 1).trim();
+    } else {
+      limited = normalized.slice(0, HARD_MAX).trim();
+    }
+  }
+  const paddingPool = [
+    " 오늘의 공기가 한층 더 포근하게 느껴졌다.",
+    " 작은 장면 하나가 오래 마음에 남았다.",
+    " 익숙한 풍경도 새롭게 보이는 순간이었다.",
+  ];
+  let paddingIndex = 0;
+  while (limited.length < 80 && paddingIndex < 10) {
+    const pad = paddingPool[paddingIndex % paddingPool.length];
+    const available = PREFERRED_MAX - limited.length;
+    if (available <= 0) break;
+    limited = `${limited}${pad.slice(0, available)}`.trim();
+    paddingIndex += 1;
+  }
   return limited
     .replace(/([.!?。！？])\s*/g, "$1\n")
     .replace(/\n{2,}/g, "\n")
@@ -1297,6 +1322,11 @@ function normalizeSectionsForImageCount(request: PublishRequest, imageCount: num
       .map((keyword) => sanitizeContent(String(keyword || "")).trim())
       .filter(Boolean)
       .slice(0, 3);
+    const fallbackKeywords = ["분위기", "감성", "기록"];
+    for (const fallback of fallbackKeywords) {
+      if (keywords.length >= 2) break;
+      if (!keywords.includes(fallback)) keywords.push(fallback);
+    }
     return { subtitle, body, keywords };
   });
 
@@ -1309,7 +1339,7 @@ function normalizeSectionsForImageCount(request: PublishRequest, imageCount: num
     filled.push({
       subtitle,
       body: normalizeBodyTextForSection("사진의 분위기와 장면을 중심으로 오늘의 감정을 기록합니다."),
-      keywords: [],
+      keywords: ["분위기", "감성", "기록"],
     });
   }
 
@@ -1379,17 +1409,22 @@ async function applyStyleToLatestTextBlock(
 }
 
 function parseQuoteAndPhilosopher(rawQuote: string) {
-  const cleaned = sanitizeContent(rawQuote).trim();
+  const cleaned = sanitizeContent(rawQuote).replace(/^[;；\s]+|[;；\s]+$/g, "").trim();
   if (!cleaned) {
     return { quote: "오늘의 순간을 기록하는 마음으로 하루를 담아봅니다.", philosopher: "작자 미상" };
   }
 
-  const lines = cleaned.split("\n").map((line) => line.trim()).filter(Boolean);
+  const normalizedForTwoLines = cleaned.replace(
+    /(["'”])\s*[—-]\s*([^—-]+?)\s*[—-]\s*$/u,
+    "$1\n- $2 -",
+  );
+
+  const lines = normalizedForTwoLines.split("\n").map((line) => line.trim()).filter(Boolean);
   const lineWithPhilosopher = lines.find((line) => /[—-].+[—-]/.test(line)) || "";
   const nameMatch = lineWithPhilosopher.match(/[—-]\s*([^—-]+?)\s*[—-]/);
   const philosopher = (nameMatch?.[1] || "").trim() || "작자 미상";
 
-  let quote = lines.find((line) => line !== lineWithPhilosopher) || cleaned;
+  let quote = lines.find((line) => line !== lineWithPhilosopher) || normalizedForTwoLines;
   quote = quote.replace(/[—-]\s*[^—-]+?\s*[—-]/g, "").trim();
   quote = quote.replace(/^["'“”]+|["'“”]+$/g, "").trim();
   if (!quote) quote = "오늘의 순간을 기록하는 마음으로 하루를 담아봅니다.";
@@ -1442,7 +1477,7 @@ async function highlightKeywordsInLatestTextBlocks(page: Page, keywords: string[
           const targetBlocks = visible.slice(Math.max(0, visible.length - Math.max(1, blockCount)));
           if (!targetBlocks.length) return false;
 
-          const highlightOneKeyword = (container: HTMLElement, keyword: string) => {
+          const highlightOneKeyword = (container: HTMLElement, keyword: string, color: string) => {
             const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
             const textNodes: Text[] = [];
             let current = walker.nextNode();
@@ -1467,7 +1502,7 @@ async function highlightKeywordsInLatestTextBlocks(page: Page, keywords: string[
               if (before) fragment.appendChild(document.createTextNode(before));
 
               const marker = document.createElement("span");
-              marker.style.backgroundColor = "#FFFF00";
+              marker.style.backgroundColor = color;
               marker.textContent = matched;
               fragment.appendChild(marker);
 
@@ -1479,9 +1514,14 @@ async function highlightKeywordsInLatestTextBlocks(page: Page, keywords: string[
             return false;
           };
 
-          for (const keyword of selectedKeywords) {
+          const highlightColors = ["#FFF176", "#A5D6A7", "#81D4FA"];
+
+          for (let keywordIndex = 0; keywordIndex < selectedKeywords.length; keywordIndex += 1) {
+            const keyword = selectedKeywords[keywordIndex];
+            const color = highlightColors[keywordIndex % highlightColors.length];
+
             for (const block of targetBlocks) {
-              if (highlightOneKeyword(block, keyword)) break;
+              if (highlightOneKeyword(block, keyword, color)) break;
             }
           }
 
@@ -1503,7 +1543,7 @@ async function highlightKeywordsInLatestTextBlocks(page: Page, keywords: string[
 
 async function insertFormattedSubtitle(page: Page, subtitle: string) {
   await moveCaretToEditorEnd(page);
-  await page.keyboard.insertText(`■ ${subtitle}`);
+  await page.keyboard.insertText(`■ ${subtitle} ■`);
   await page.waitForTimeout(50);
   await applyStyleToLatestTextBlock(page, {
     textAlign: "center",
@@ -1583,9 +1623,10 @@ async function fillContentAndInsertImagesBySectionStructure(page: Page, request:
     expectedParts.push(quoteSection.quote);
 
     await page.keyboard.press("Enter").catch(() => {});
+    await page.keyboard.press("Enter").catch(() => {});
     await page.waitForTimeout(60);
     await moveCaretToEditorEnd(page);
-    await page.keyboard.insertText(`— ${quoteSection.philosopher} —`);
+    await page.keyboard.insertText(`- ${quoteSection.philosopher} -`);
     await page.waitForTimeout(60);
     await applyStyleToLatestTextBlock(page, {
       textAlign: "center",
@@ -2651,10 +2692,7 @@ async function publishToNaverOnce(request: PublishRequest, attempt: number): Pro
     }
 
     tempImageFiles = prepareImageFiles(request.images || []);
-    const canUseSectionStructure =
-      tempImageFiles.length > 0 &&
-      Array.isArray(request.sections) &&
-      request.sections.length === tempImageFiles.length;
+    const canUseSectionStructure = tempImageFiles.length > 0;
 
     const contentOk = canUseSectionStructure
       ? await fillContentAndInsertImagesBySectionStructure(page, request, tempImageFiles)
