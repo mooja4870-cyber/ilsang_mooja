@@ -27,6 +27,24 @@ function isQuotaExceededMessage(message: string): boolean {
   );
 }
 
+const MAX_QUOTA_RETRY_COUNT = 1;
+const DEFAULT_QUOTA_RETRY_DELAY_SECONDS = 22;
+const MAX_RETRY_DELAY_SECONDS = 60;
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function getRetryDelaySeconds(message: string): number {
+  const parsed = parseRetryDelaySeconds(message);
+  if (!parsed || Number.isNaN(parsed) || parsed <= 0) {
+    return DEFAULT_QUOTA_RETRY_DELAY_SECONDS;
+  }
+  return Math.min(parsed, MAX_RETRY_DELAY_SECONDS);
+}
+
 function toUserFriendlyError(error: unknown): Error {
   const message = toSafeMessage(error);
   const lowerMessage = message.toLowerCase();
@@ -106,40 +124,56 @@ export async function generateBlogPost(input: UserInput): Promise<BlogPost> {
     };
   });
 
-  try {
-    const response: GenerateContentResponse = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: { 
-        parts: [textPart, ...imageParts] 
-      },
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            title: { type: Type.STRING },
-            quote: { type: Type.STRING },
-            sections: { 
-              type: Type.ARRAY,
-              items: { type: Type.STRING }
+  for (let attempt = 0; attempt <= MAX_QUOTA_RETRY_COUNT; attempt += 1) {
+    try {
+      const response: GenerateContentResponse = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: { 
+          parts: [textPart, ...imageParts] 
+        },
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              title: { type: Type.STRING },
+              quote: { type: Type.STRING },
+              sections: { 
+                type: Type.ARRAY,
+                items: { type: Type.STRING }
+              },
+              seoKeywords: {
+                type: Type.ARRAY,
+                items: { type: Type.STRING }
+              }
             },
-            seoKeywords: {
-              type: Type.ARRAY,
-              items: { type: Type.STRING }
-            }
-          },
-          required: ["title", "quote", "sections", "seoKeywords"]
+            required: ["title", "quote", "sections", "seoKeywords"]
+          }
         }
+      });
+
+      if (!response.text) {
+        throw new Error("AI가 응답을 생성하지 못했습니다.");
       }
-    });
 
-    if (!response.text) {
-      throw new Error("AI가 응답을 생성하지 못했습니다.");
+      return JSON.parse(response.text);
+    } catch (error: unknown) {
+      const message = toSafeMessage(error);
+      const canRetry = attempt < MAX_QUOTA_RETRY_COUNT;
+
+      if (isQuotaExceededMessage(message) && canRetry) {
+        const retryDelaySeconds = getRetryDelaySeconds(message);
+        console.warn(
+          `Gemini quota exceeded. Retry in ${retryDelaySeconds}s (attempt ${attempt + 2}/${MAX_QUOTA_RETRY_COUNT + 1})`
+        );
+        await wait(retryDelaySeconds * 1000);
+        continue;
+      }
+
+      console.error("Gemini API Error:", error);
+      throw toUserFriendlyError(error);
     }
-
-    return JSON.parse(response.text);
-  } catch (error: unknown) {
-    console.error("Gemini API Error:", error);
-    throw toUserFriendlyError(error);
   }
+
+  throw new Error("블로그 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.");
 }
