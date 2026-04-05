@@ -44,5 +44,6 @@ Use a container platform (Railway, Render, Fly.io) so your phone can access a st
 
 This project includes:
 - `Dockerfile` for Linux + Chrome runtime
+- Korean font package (`fonts-noto-cjk`) for quote-card glyph stability
 - `.dockerignore`
 - production start script (`npm run start`)

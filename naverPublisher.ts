@@ -1475,6 +1475,12 @@ function normalizeSectionsForImageCount(request: PublishRequest, imageCount: num
   return filled;
 }
 
+function getExpectedEditorImageCount(request: PublishRequest, imageCount: number) {
+  const quoteSection = resolveQuoteSectionFromRequest(request);
+  const quoteImageCount = quoteSection.hasInput && quoteSection.quote ? 1 : 0;
+  return imageCount + quoteImageCount;
+}
+
 async function applyStyleToLatestTextBlock(
   page: Page,
   style: {
@@ -1709,7 +1715,7 @@ async function createQuoteCardImageFile(page: Page, quote: string, philosopher: 
               width: 100%;
               height: 100%;
               background: ${backgroundColor};
-              font-family: "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+              font-family: "Noto Sans CJK KR", "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
             }
             .card {
               width: 1200px;
@@ -1749,6 +1755,15 @@ async function createQuoteCardImageFile(page: Page, quote: string, philosopher: 
       </html>`,
       { waitUntil: "domcontentloaded" },
     );
+    await cardPage
+      .evaluate(async () => {
+        const fonts = document.fonts;
+        if (fonts && "ready" in fonts) {
+          await fonts.ready;
+        }
+      })
+      .catch(() => {});
+    await cardPage.waitForTimeout(150).catch(() => {});
     await cardPage.screenshot({ path: filePath, type: "png" });
     if (fs.existsSync(filePath) && fs.statSync(filePath).size > 0) {
       return filePath;
@@ -2190,6 +2205,95 @@ async function countEditorImages(page: Page) {
   return maxCount;
 }
 
+async function waitForEditorImageCountAtLeast(page: Page, minimumCount: number, timeoutMs = 12000) {
+  const deadline = Date.now() + Math.max(1500, timeoutMs);
+  let latestCount = await countEditorImages(page);
+  while (Date.now() < deadline) {
+    if (latestCount >= minimumCount) return latestCount;
+    await page.waitForTimeout(250);
+    latestCount = await countEditorImages(page);
+  }
+  return latestCount;
+}
+
+async function removeConsecutiveDuplicateEditorImages(page: Page) {
+  const dedupeInRoot = async (root: Page | Frame) => {
+    try {
+      return await root.evaluate(() => {
+        const normalizeSrc = (value: string) => {
+          if (!value) return "";
+          try {
+            const parsed = new URL(value, location.href);
+            parsed.hash = "";
+            parsed.search = "";
+            return parsed.toString();
+          } catch {
+            return value.split("#")[0].split("?")[0];
+          }
+        };
+
+        const modules = Array.from(
+          document.querySelectorAll(".se-main-container .se-module-image, .se-module-image"),
+        ) as HTMLElement[];
+        let removed = 0;
+        let previousSrc = "";
+
+        for (const module of modules) {
+          const imageEl = module.querySelector("img");
+          const src = normalizeSrc(
+            (imageEl?.getAttribute("src") || imageEl?.getAttribute("data-src") || "").trim(),
+          );
+          if (!src) {
+            previousSrc = "";
+            continue;
+          }
+          if (src === previousSrc) {
+            module.remove();
+            removed += 1;
+            continue;
+          }
+          previousSrc = src;
+        }
+        return removed;
+      });
+    } catch {
+      return 0;
+    }
+  };
+
+  let removedCount = await dedupeInRoot(page);
+  for (const frame of page.frames()) {
+    removedCount += await dedupeInRoot(frame);
+  }
+
+  if (removedCount > 0) {
+    await page.waitForTimeout(350).catch(() => {});
+  }
+  return removedCount;
+}
+
+async function enforceExpectedEditorImageCount(page: Page, expectedCount: number, stageLabel: string) {
+  if (expectedCount <= 0) return { ok: true, actualCount: 0, message: "" };
+
+  let actualCount = await waitForEditorImageCountAtLeast(page, expectedCount, 14000);
+  if (actualCount > expectedCount) {
+    const removed = await removeConsecutiveDuplicateEditorImages(page);
+    if (removed > 0) {
+      console.warn(`[publish] ${stageLabel}: duplicated image modules removed=${removed}`);
+      actualCount = await waitForEditorImageCountAtLeast(page, expectedCount, 8000);
+    }
+  }
+
+  if (actualCount !== expectedCount) {
+    return {
+      ok: false,
+      actualCount,
+      message: `이미지 개수가 예상과 다릅니다. 예상 ${expectedCount}장 / 현재 ${actualCount}장`,
+    };
+  }
+  return { ok: true, actualCount, message: "" };
+}
+
 async function setInputFilesByRoot(root: Page | Frame, imagePath: string) {
   const candidates = [
     "input[type='file'][accept*='image']",
@@ -2391,6 +2495,8 @@ async function dismissFileTransferErrorPopup(page: Page) {
 }
 
 async function uploadImageAtCursorAndVerify(page: Page, imagePath: string, previousCount: number) {
+  const targetCount = previousCount + 1;
+
   for (let attempt = 0; attempt < 3; attempt += 1) {
     await dismissBlockingEditorPopup(page);
     const uploaded = await uploadSingleImage(page, imagePath);
@@ -2399,16 +2505,21 @@ async function uploadImageAtCursorAndVerify(page: Page, imagePath: string, previ
       continue;
     }
 
-    await page.waitForTimeout(1700 + attempt * 500);
+    const waitMs = 5000 + attempt * 3000;
+    const currentCount = await waitForEditorImageCountAtLeast(page, targetCount, waitMs);
+
     if (await hasFileTransferErrorPopup(page)) {
       await dismissFileTransferErrorPopup(page);
       continue;
     }
 
-    const currentCount = await countEditorImages(page);
-    if (currentCount > previousCount) {
+    if (currentCount >= targetCount) {
       return currentCount;
     }
+
+    // 이미지 업로드 반영 지연을 고려해 재업로드 전에 마지막 확인을 한 번 더 수행합니다.
+    const delayedCount = await waitForEditorImageCountAtLeast(page, targetCount, 3500);
+    if (delayedCount >= targetCount) return delayedCount;
   }
 
   return -1;
@@ -3104,12 +3215,13 @@ async function publishToNaverOnce(request: PublishRequest, attempt: number): Pro
       });
     }
     const canUseSectionStructure = tempImageFiles.length > 0;
+    const expectedEditorImageCount = canUseSectionStructure
+      ? getExpectedEditorImageCount(request, tempImageFiles.length)
+      : tempImageFiles.length;
 
     const contentOk = canUseSectionStructure
       ? await fillContentAndInsertImagesBySectionStructure(page, request, tempImageFiles)
-      : tempImageFiles.length > 0
-        ? await fillContentAndInsertImagesByParagraphPlan(page, request.content, tempImageFiles)
-        : await fillContent(page, request.content);
+      : await fillContent(page, request.content);
 
     if (!contentOk) {
       if (tempImageFiles.length > 0) {
@@ -3146,9 +3258,9 @@ async function publishToNaverOnce(request: PublishRequest, attempt: number): Pro
       }
     }
 
-    if (tempImageFiles.length > 0) {
-      const imageCount = await countEditorImages(page);
-      if (imageCount < tempImageFiles.length) {
+    if (expectedEditorImageCount > 0) {
+      const imageGuard = await enforceExpectedEditorImageCount(page, expectedEditorImageCount, "before-draft-ready");
+      if (!imageGuard.ok) {
         const screenshotPath = await saveFailureScreenshot(page, "POST_FAIL");
         return finish({
           ok: false,
@@ -3156,7 +3268,7 @@ async function publishToNaverOnce(request: PublishRequest, attempt: number): Pro
           postUrl: "",
           contentLength: 0,
           screenshotPath,
-          message: "이미지가 섹션 수에 맞게 충분히 삽입되지 않았습니다.",
+          message: imageGuard.message || "이미지 검증에 실패했습니다.",
         });
       }
     }
@@ -3186,9 +3298,13 @@ async function publishToNaverOnce(request: PublishRequest, attempt: number): Pro
       });
     }
 
-    if (tempImageFiles.length > 0) {
-      const imageCountAfterRecovery = await countEditorImages(page);
-      if (imageCountAfterRecovery < tempImageFiles.length) {
+    if (expectedEditorImageCount > 0) {
+      const imageGuardAfterRecovery = await enforceExpectedEditorImageCount(
+        page,
+        expectedEditorImageCount,
+        "after-draft-ready",
+      );
+      if (!imageGuardAfterRecovery.ok) {
         const screenshotPath = await saveFailureScreenshot(page, "POST_FAIL");
         return finish({
           ok: false,
@@ -3196,7 +3312,7 @@ async function publishToNaverOnce(request: PublishRequest, attempt: number): Pro
           postUrl: "",
           contentLength: 0,
           screenshotPath,
-          message: "발행 직전 이미지 섹션 배치가 유지되지 않아 중단했습니다.",
+          message: imageGuardAfterRecovery.message || "발행 직전 이미지 검증에 실패했습니다.",
         });
       }
     }
