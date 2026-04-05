@@ -141,7 +141,11 @@ async function startServer() {
   const PORT = Number(process.env.PORT) || 3000;
   
   // CORS 설정: Streamlit Cloud로부터의 외부 요청 허용
-  app.use(cors());
+  app.use(cors({
+    origin: '*',
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+  }));
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
