@@ -19,6 +19,12 @@ import { LOCATIONS, PURPOSES, UserInput, BlogPost } from './types';
 import { generateBlogPost } from './services/geminiService';
 import axios from 'axios';
 
+// Streamlit 등 특수 환경에서 baseURL이 about:srcdoc일 때 발생하는 URL 오류 방지
+const API_BASE = "http://localhost:3000";
+const getApiUrl = (path: string) => {
+  return `${API_BASE}${path.startsWith('/') ? path : '/' + path}`;
+};
+
 const MAX_IMAGES = 10;
 
 interface StructuredSectionDraft {
@@ -583,7 +589,7 @@ export default function App() {
       contentLines.push(hashtags.map((tag) => `#${tag}`).join(' '));
     }
 
-    const response = await axios.post('/api/publish', {
+    const response = await axios.post(getApiUrl('/api/publish'), {
       title: post.title,
       content: contentLines.join('\n\n'),
       images,

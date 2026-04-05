@@ -1,6 +1,7 @@
 import express from "express";
 import path from "path";
 import dotenv from "dotenv";
+import cors from "cors";
 import { createServer as createViteServer } from "vite";
 import { publishToNaver, closeGlobalBrowser } from "./naverPublisher";
 
@@ -137,13 +138,17 @@ async function runPublishJob(jobId: string, title: string, content: string, imag
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
+  
+  // CORS 설정: Streamlit Cloud로부터의 외부 요청 허용
+  app.use(cors());
+  app.use(express.json({ limit: '50mb' }));
+  app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
   const naverBlogId = (process.env.NAVER_BLOG_ID || "").trim();
   const naverEditorUrl = naverBlogId
     ? `https://blog.naver.com/${encodeURIComponent(naverBlogId)}/postwrite`
     : "https://blog.naver.com";
-
-  app.use(express.json({ limit: '50mb' }));
 
   app.get("/api/config", (req, res) => {
     res.set("Cache-Control", "no-store");
