@@ -36,6 +36,8 @@ Use a container platform (Railway, Render, Fly.io) so your phone can access a st
    - `NAVER_PASSWORD`
    - `NAVER_BLOG_ID`
    - optional: `NAVER_LOGIN_MODE=hybrid`
+   - recommended: `BROWSER_HEADLESS=true` (server container safety)
+   - optional: `NAVER_TRACE_ENABLED=false` (reduce trace I/O in production)
 5. Verify health:
    `GET /api/health`
 6. Open the Railway-generated domain from your phone.

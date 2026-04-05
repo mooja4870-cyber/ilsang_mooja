@@ -274,6 +274,14 @@ function getMaxPublishAttempts() {
   return Math.max(1, Math.min(5, Number.isFinite(raw) ? raw : 3));
 }
 
+function getBrowserHeadlessMode() {
+  const raw = (process.env.BROWSER_HEADLESS || "").toLowerCase().trim();
+  if (raw === "true" || raw === "1" || raw === "yes") return true;
+  if (raw === "false" || raw === "0" || raw === "no") return false;
+  if (process.platform === "linux" && !process.env.DISPLAY) return true;
+  return process.env.NODE_ENV === "production";
+}
+
 function isRetryableReason(reason: ReasonCode) {
   return [
     "POST_FAIL",
@@ -396,9 +404,14 @@ async function launchBrowser(headless: boolean): Promise<Browser> {
   if (!executablePath) {
     throw new Error("Chrome 실행 파일을 찾지 못했습니다. BROWSER_EXECUTABLE_PATH를 설정해주세요.");
   }
+  const forceHeadlessForLinuxNoDisplay = process.platform === "linux" && !process.env.DISPLAY;
+  const effectiveHeadless = forceHeadlessForLinuxNoDisplay ? true : headless;
+  if (forceHeadlessForLinuxNoDisplay && !headless) {
+    console.warn("[naverPublisher] DISPLAY가 없어 headless=false 설정을 무시하고 headless=true로 강제합니다.");
+  }
 
   return chromium.launch({
-    headless,
+    headless: effectiveHeadless,
     executablePath,
     args: [
       "--disable-dev-shm-usage",
@@ -3031,7 +3044,7 @@ async function publishToNaverOnce(request: PublishRequest, attempt: number): Pro
   }
 
   const credentials = loadCredentials();
-  const headless = process.env.BROWSER_HEADLESS === "true";
+  const headless = getBrowserHeadlessMode();
   const traceEnabled = process.env.NAVER_TRACE_ENABLED !== "false";
   let traceStarted = false;
   let succeeded = false;
