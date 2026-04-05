@@ -105,7 +105,7 @@ export async function generateBlogPost(input: UserInput): Promise<BlogPost> {
       1. title: catchy Korean title.
       2. quote: must be exactly this 2-line format:
          "quote sentence"
-         — philosopher name —
+         - philosopher name -
       3. sections: exactly ${input.sections} items.
          - each section string format:
            subtitle line + newline + body line(s)

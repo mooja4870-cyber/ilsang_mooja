@@ -28,6 +28,8 @@ interface PublishRequest {
   content: string;
   images?: string[];
   quote?: string;
+  quoteText?: string;
+  quoteAuthor?: string;
   sections?: Array<{
     subtitle: string;
     body: string;
@@ -1119,7 +1121,99 @@ function buildParagraphImagePlan(rawContent: string, imageCount: number): Paragr
 }
 
 function normalizeComparableText(text: string) {
-  return text.replace(/\s+/g, "").trim();
+  return text
+    .replace(/[\u200B\u2060\uFEFF]/g, "")
+    .replace(/\s+/g, "")
+    .trim();
+}
+
+async function enforceNoWordBreakAcrossEditor(page: Page) {
+  const applyInRoot = async (root: Page | Frame) => {
+    try {
+      return await root.evaluate(() => {
+        const WORD_JOINER = "\u2060";
+        const selectors = [
+          ".se-section-documentTitle .se-title-text",
+          ".se-title-text.se-module-text",
+          ".se-title-text .se-module-text",
+          ".se-main-container .se-section-text .se-module-text",
+          ".se-main-container .se-text-paragraph",
+          ".se-section-text .se-module-text",
+          ".se-text-paragraph",
+          ".se-module-text",
+          "p",
+          "h1",
+          "h2",
+          "h3",
+        ];
+
+        const candidates: HTMLElement[] = [];
+        const visited = new Set<HTMLElement>();
+        for (const selector of selectors) {
+          const nodes = Array.from(document.querySelectorAll(selector));
+          for (const node of nodes) {
+            if (!(node instanceof HTMLElement)) continue;
+            if (visited.has(node)) continue;
+            visited.add(node);
+            candidates.push(node);
+          }
+        }
+
+        const transformToken = (token: string) => {
+          const cleaned = token.replace(/[\u200B\u2060\uFEFF]/g, "");
+          const chars = Array.from(cleaned);
+          if (chars.length <= 1) return cleaned;
+          return chars.join(WORD_JOINER);
+        };
+
+        const transformText = (text: string) =>
+          text
+            .split(/(\s+)/)
+            .map((part) => (/^\s+$/.test(part) ? part : transformToken(part)))
+            .join("");
+
+        let updatedNodeCount = 0;
+        for (const target of candidates) {
+          const rect = target.getBoundingClientRect();
+          const css = window.getComputedStyle(target);
+          if (css.display === "none" || css.visibility === "hidden") continue;
+          if (rect.width <= 0 || rect.height <= 0) continue;
+
+          target.style.wordBreak = "keep-all";
+          target.style.overflowWrap = "normal";
+          target.style.wordWrap = "normal";
+          target.style.lineBreak = "strict";
+
+          const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT);
+          let current = walker.nextNode();
+          while (current) {
+            if (current.nodeType === Node.TEXT_NODE) {
+              const textNode = current as Text;
+              const source = textNode.nodeValue || "";
+              if (source.trim()) {
+                const transformed = transformText(source);
+                if (transformed !== source) {
+                  textNode.nodeValue = transformed;
+                  updatedNodeCount += 1;
+                }
+              }
+            }
+            current = walker.nextNode();
+          }
+        }
+
+        return updatedNodeCount;
+      });
+    } catch {
+      return 0;
+    }
+  };
+
+  let updated = await applyInRoot(page);
+  for (const frame of page.frames()) {
+    updated += await applyInRoot(frame);
+  }
+  return updated > 0;
 }
 
 async function isLikelyTitleLocator(locator: Locator) {
@@ -1268,10 +1362,16 @@ async function insertParagraphGap(page: Page) {
   await page.waitForTimeout(70);
 }
 
+async function insertSingleParagraphGap(page: Page) {
+  await page.keyboard.press("Enter").catch(() => {});
+  await page.waitForTimeout(50);
+}
+
 function sanitizeSubtitleText(text: string, sectionIndex: number) {
   const normalized = sanitizeContent(text)
     .replace(/^#+\s*/, "")
     .replace(/^■\s*/, "")
+    .replace(/\s*■$/, "")
     .replace(/^소제목[:：]?\s*/i, "")
     .trim();
   return normalized || `소제목 ${sectionIndex + 1}`;
@@ -1279,7 +1379,44 @@ function sanitizeSubtitleText(text: string, sectionIndex: number) {
 
 function normalizeBodyTextForSection(text: string) {
   const normalized = sanitizeContent(text).replace(/\s+/g, " ").trim();
-  const limited = normalized.length > 130 ? normalized.slice(0, 130).trim() : normalized;
+  const PREFERRED_MIN = 60;
+  const PREFERRED_MAX = 80;
+  const HARD_MAX = 160;
+  let limited = normalized;
+
+  if (normalized.length > PREFERRED_MAX) {
+    const preferredWindow = normalized.slice(PREFERRED_MIN, PREFERRED_MAX + 1);
+    const preferredSentenceEndOffset = preferredWindow.search(/[.!?。！？]/);
+    if (preferredSentenceEndOffset >= 0) {
+      limited = normalized.slice(0, PREFERRED_MIN + preferredSentenceEndOffset + 1).trim();
+    } else {
+      const extendedWindow = normalized.slice(PREFERRED_MAX, HARD_MAX + 1);
+      const extendedSentenceEndOffset = extendedWindow.search(/[.!?。！？]/);
+      if (extendedSentenceEndOffset >= 0) {
+        // 기본 범위(60~80)로 문장 마무리가 어려운 경우에만 160자까지 확장
+        limited = normalized.slice(0, PREFERRED_MAX + extendedSentenceEndOffset + 1).trim();
+      } else if (normalized.length > HARD_MAX) {
+        const hardLimited = normalized.slice(0, HARD_MAX).trim();
+        const lastSpace = hardLimited.lastIndexOf(" ");
+        limited = lastSpace >= PREFERRED_MIN ? hardLimited.slice(0, lastSpace).trim() : hardLimited;
+      } else {
+        limited = normalized;
+      }
+    }
+  }
+  const paddingPool = [
+    " 오늘의 공기가 한층 더 포근하게 느껴졌다.",
+    " 작은 장면 하나가 오래 마음에 남았다.",
+    " 익숙한 풍경도 새롭게 보이는 순간이었다.",
+  ];
+  let paddingIndex = 0;
+  while (limited.length < PREFERRED_MIN && paddingIndex < 10) {
+    const pad = paddingPool[paddingIndex % paddingPool.length];
+    const available = PREFERRED_MAX - limited.length;
+    if (available <= 0) break;
+    limited = `${limited}${pad.slice(0, available)}`.trim();
+    paddingIndex += 1;
+  }
   return limited
     .replace(/([.!?。！？])\s*/g, "$1\n")
     .replace(/\n{2,}/g, "\n")
@@ -1324,6 +1461,7 @@ async function applyStyleToLatestTextBlock(
     fontSize?: string;
     wordBreak?: string;
     overflowWrap?: string;
+    wordWrap?: string;
   },
 ) {
   const applyInRoot = async (root: Page | Frame) => {
@@ -1363,7 +1501,11 @@ async function applyStyleToLatestTextBlock(
         if (targetStyle.fontWeight) target.style.fontWeight = targetStyle.fontWeight;
         if (targetStyle.fontSize) target.style.fontSize = targetStyle.fontSize;
         if (targetStyle.wordBreak) target.style.wordBreak = targetStyle.wordBreak;
-        if (targetStyle.overflowWrap) target.style.overflowWrap = targetStyle.overflowWrap;
+        if (targetStyle.overflowWrap) {
+          target.style.overflowWrap = targetStyle.overflowWrap;
+          target.style.wordWrap = targetStyle.overflowWrap;
+        }
+        if (targetStyle.wordWrap) target.style.wordWrap = targetStyle.wordWrap;
         return true;
       }, style);
     } catch {
@@ -1384,17 +1526,218 @@ function parseQuoteAndPhilosopher(rawQuote: string) {
     return { quote: "오늘의 순간을 기록하는 마음으로 하루를 담아봅니다.", philosopher: "작자 미상" };
   }
 
+  const DASH_CHAR_CLASS = "[-‐‑‒–—―−]";
+  const STRICT_DASH_AUTHOR_REGEX = new RegExp(`^${DASH_CHAR_CLASS}\\s*([^\\-‐‑‒–—―−]+?)\\s*${DASH_CHAR_CLASS}$`, "u");
+  const LOOSE_DASH_AUTHOR_REGEX = new RegExp(`${DASH_CHAR_CLASS}\\s*([^\\-‐‑‒–—―−]+?)\\s*${DASH_CHAR_CLASS}`, "u");
+  const STRIP_DASH_AUTHOR_REGEX = new RegExp(`${DASH_CHAR_CLASS}\\s*[^\\-‐‑‒–—―−]+?\\s*${DASH_CHAR_CLASS}`, "gu");
   const lines = cleaned.split("\n").map((line) => line.trim()).filter(Boolean);
-  const lineWithPhilosopher = lines.find((line) => /[—-].+[—-]/.test(line)) || "";
-  const nameMatch = lineWithPhilosopher.match(/[—-]\s*([^—-]+?)\s*[—-]/);
-  const philosopher = (nameMatch?.[1] || "").trim() || "작자 미상";
+  const isStandaloneQuoteMarker = (line: string) => /^["'“”‘’\s]+$/.test(line.trim());
+  const extractPhilosopherName = (line: string) => {
+    const strictMatch = line.match(STRICT_DASH_AUTHOR_REGEX);
+    if (strictMatch?.[1]) return strictMatch[1].trim();
+    const looseMatch = line.match(LOOSE_DASH_AUTHOR_REGEX);
+    return (looseMatch?.[1] || "").trim();
+  };
 
-  let quote = lines.find((line) => line !== lineWithPhilosopher) || cleaned;
-  quote = quote.replace(/[—-]\s*[^—-]+?\s*[—-]/g, "").trim();
-  quote = quote.replace(/^["'“”]+|["'“”]+$/g, "").trim();
+  const lineWithPhilosopher =
+    lines.find((line) => STRICT_DASH_AUTHOR_REGEX.test(line)) ||
+    lines.find((line) => LOOSE_DASH_AUTHOR_REGEX.test(line)) ||
+    "";
+  const philosopher = extractPhilosopherName(lineWithPhilosopher) || "작자 미상";
+
+  const quoteLineCandidates = lines
+    .filter((line) => line !== lineWithPhilosopher)
+    .filter((line) => !isStandaloneQuoteMarker(line))
+    .map((line) => line.replace(/^["'“”]+|["'“”]+$/g, "").trim())
+    .filter(Boolean);
+
+  let quote = quoteLineCandidates.join(" ").replace(/\s+/g, " ").trim();
+  if (!quote) {
+    quote = cleaned
+      .replace(STRIP_DASH_AUTHOR_REGEX, " ")
+      .replace(/^["'“”‘’]+|["'“”‘’]+$/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
   if (!quote) quote = "오늘의 순간을 기록하는 마음으로 하루를 담아봅니다.";
 
   return { quote, philosopher };
+}
+
+function normalizeQuoteInlineText(text: string) {
+  return sanitizeContent(text)
+    .replace(/^["'“”‘’]+|["'“”‘’]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeQuoteAuthorText(text: string) {
+  return sanitizeContent(text)
+    .replace(/^[—-\s]+|[—-\s]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeQuoteCardParts(rawQuote: string, rawPhilosopher: string) {
+  const DASH_CHAR_CLASS = "[-‐‑‒–—―−]";
+  const STRICT_DASH_AUTHOR_REGEX = new RegExp(`^${DASH_CHAR_CLASS}\\s*([^\\-‐‑‒–—―−]+?)\\s*${DASH_CHAR_CLASS}$`, "u");
+  const LOOSE_DASH_AUTHOR_REGEX = new RegExp(`${DASH_CHAR_CLASS}\\s*([^\\-‐‑‒–—―−]+?)\\s*${DASH_CHAR_CLASS}`, "u");
+  const STRIP_DASH_AUTHOR_REGEX = new RegExp(`${DASH_CHAR_CLASS}\\s*[^\\-‐‑‒–—―−]+?\\s*${DASH_CHAR_CLASS}`, "gu");
+  const TAIL_SPLIT_REGEX = new RegExp(`^(.*?)\\s*${DASH_CHAR_CLASS}\\s*([^\\-‐‑‒–—―−]+?)\\s*${DASH_CHAR_CLASS}\\s*$`, "u");
+
+  let quote = normalizeQuoteInlineText(rawQuote);
+  let philosopher = normalizeQuoteAuthorText(rawPhilosopher);
+
+  const tailSplitMatch = quote.match(TAIL_SPLIT_REGEX);
+  if (tailSplitMatch?.[1] && tailSplitMatch?.[2]) {
+    const headQuote = normalizeQuoteInlineText(tailSplitMatch[1]);
+    const tailAuthor = normalizeQuoteAuthorText(tailSplitMatch[2]);
+    if (headQuote) quote = headQuote;
+    if (!philosopher && tailAuthor) philosopher = tailAuthor;
+  }
+
+  if (!philosopher) {
+    const strictFromQuote = quote.match(STRICT_DASH_AUTHOR_REGEX);
+    if (strictFromQuote?.[1]) philosopher = normalizeQuoteAuthorText(strictFromQuote[1]);
+  }
+  if (!philosopher) {
+    const looseFromQuote = quote.match(LOOSE_DASH_AUTHOR_REGEX);
+    if (looseFromQuote?.[1]) philosopher = normalizeQuoteAuthorText(looseFromQuote[1]);
+  }
+
+  if (philosopher) {
+    const escaped = philosopher.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const explicitAuthorAtTail = new RegExp(`${DASH_CHAR_CLASS}\\s*${escaped}\\s*${DASH_CHAR_CLASS}\\s*$`, "u");
+    quote = quote.replace(explicitAuthorAtTail, "").trim();
+  } else {
+    quote = quote.replace(STRIP_DASH_AUTHOR_REGEX, " ").replace(/\s+/g, " ").trim();
+  }
+
+  quote = normalizeQuoteInlineText(quote);
+  return {
+    quote: quote || "오늘의 순간을 기록하는 마음으로 하루를 담아봅니다.",
+    philosopher: philosopher || "작자 미상",
+  };
+}
+
+function resolveQuoteSectionFromRequest(request: PublishRequest) {
+  const explicitQuote =
+    typeof request.quoteText === "string" ? normalizeQuoteInlineText(request.quoteText) : "";
+  const explicitAuthor =
+    typeof request.quoteAuthor === "string" ? normalizeQuoteAuthorText(request.quoteAuthor) : "";
+
+  if (explicitQuote) {
+    return {
+      quote: explicitQuote,
+      philosopher: explicitAuthor || "작자 미상",
+      hasInput: true,
+    };
+  }
+
+  const rawQuote = typeof request.quote === "string" ? request.quote : "";
+  if (rawQuote.trim()) {
+    const parsed = parseQuoteAndPhilosopher(rawQuote);
+    return { ...parsed, hasInput: true };
+  }
+
+  return { quote: "", philosopher: "", hasInput: false };
+}
+
+function escapeHtml(text: string) {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+async function createQuoteCardImageFile(page: Page, quote: string, philosopher: string) {
+  const normalized = normalizeQuoteCardParts(quote, philosopher);
+  const safeQuote = normalized.quote;
+  const safePhilosopher = normalized.philosopher;
+  const pastelPalette = [
+    "#F9EAEA",
+    "#EAF3F9",
+    "#EEF8EE",
+    "#FFF4E6",
+    "#F3EDFF",
+    "#EAF7F5",
+    "#FFF0F5",
+    "#F4F4E8",
+  ];
+  const backgroundColor = pastelPalette[Math.floor(Math.random() * pastelPalette.length)];
+  const filePath = path.join(
+    UPLOAD_DIR,
+    `publish_quote_${nowToken()}_${Math.random().toString(36).slice(2, 8)}.png`,
+  );
+
+  const cardPage = await page.context().newPage();
+  try {
+    await cardPage.setViewportSize({ width: 1200, height: 420 });
+    await cardPage.setContent(
+      `<!doctype html>
+      <html lang="ko">
+        <head>
+          <meta charset="utf-8" />
+          <style>
+            html, body {
+              margin: 0;
+              padding: 0;
+              width: 100%;
+              height: 100%;
+              background: ${backgroundColor};
+              font-family: "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+            }
+            .card {
+              width: 1200px;
+              height: 420px;
+              display: flex;
+              flex-direction: column;
+              align-items: center;
+              justify-content: center;
+              gap: 18px;
+              text-align: center;
+            }
+            .quote {
+              color: #555;
+              max-width: 980px;
+              font-size: 54px;
+              line-height: 1.25;
+              font-weight: 600;
+              word-break: keep-all;
+              overflow-wrap: normal;
+              word-wrap: normal;
+            }
+            .name {
+              color: #4b4b4b;
+              font-size: 40px;
+              line-height: 1.3;
+              font-weight: 500;
+              word-break: keep-all;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="card">
+            <div class="quote">${escapeHtml(safeQuote)}</div>
+            <div class="name">- ${escapeHtml(safePhilosopher)} -</div>
+          </div>
+        </body>
+      </html>`,
+      { waitUntil: "domcontentloaded" },
+    );
+    await cardPage.screenshot({ path: filePath, type: "png" });
+    if (fs.existsSync(filePath) && fs.statSync(filePath).size > 0) {
+      return filePath;
+    }
+  } catch {
+    // ignore
+  } finally {
+    await cardPage.close().catch(() => {});
+  }
+
+  return "";
 }
 
 async function highlightKeywordsInLatestTextBlocks(page: Page, keywords: string[], recentBlockCount: number) {
@@ -1501,17 +1844,101 @@ async function highlightKeywordsInLatestTextBlocks(page: Page, keywords: string[
   return false;
 }
 
+async function toggleBoldTypingMode(page: Page) {
+  const shortcut = process.platform === "darwin" ? "Meta+B" : "Control+B";
+  await page.keyboard.press(shortcut).catch(() => {});
+  await page.waitForTimeout(40);
+}
+
+async function enforceBoldOnLatestTextBlock(page: Page) {
+  const applyInRoot = async (root: Page | Frame) => {
+    try {
+      return await root.evaluate(() => {
+        const selectors = [
+          ".se-main-container .se-section-text .se-module-text",
+          ".se-main-container .se-text-paragraph",
+          ".se-section-text .se-module-text",
+          ".se-text-paragraph",
+          ".se-module-text",
+          "p",
+        ];
+
+        const candidates: HTMLElement[] = [];
+        const visited = new Set<HTMLElement>();
+        for (const selector of selectors) {
+          const nodes = Array.from(document.querySelectorAll(selector));
+          for (const node of nodes) {
+            if (!(node instanceof HTMLElement)) continue;
+            if (visited.has(node)) continue;
+            visited.add(node);
+            candidates.push(node);
+          }
+        }
+
+        const visible = candidates.filter((el) => {
+          const rect = el.getBoundingClientRect();
+          const css = window.getComputedStyle(el);
+          return rect.width > 0 && rect.height > 0 && css.display !== "none" && css.visibility !== "hidden";
+        });
+
+        const target = visible[visible.length - 1] || candidates[candidates.length - 1];
+        if (!target) return false;
+        target.style.fontWeight = "700";
+
+        const hasBoldElement = Boolean(target.querySelector("strong, b"));
+        if (hasBoldElement) return true;
+
+        const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT);
+        const textNodes: Text[] = [];
+        let current = walker.nextNode();
+        while (current) {
+          if (current.nodeType === Node.TEXT_NODE) {
+            const textNode = current as Text;
+            if ((textNode.nodeValue || "").trim()) {
+              textNodes.push(textNode);
+            }
+          }
+          current = walker.nextNode();
+        }
+
+        for (const textNode of textNodes) {
+          const parent = textNode.parentElement;
+          if (parent?.closest("strong, b")) continue;
+          const strong = document.createElement("strong");
+          strong.style.fontWeight = "700";
+          strong.textContent = textNode.nodeValue || "";
+          textNode.parentNode?.replaceChild(strong, textNode);
+        }
+
+        return true;
+      });
+    } catch {
+      return false;
+    }
+  };
+
+  if (await applyInRoot(page)) return true;
+  for (const frame of page.frames()) {
+    if (await applyInRoot(frame)) return true;
+  }
+  return false;
+}
+
 async function insertFormattedSubtitle(page: Page, subtitle: string) {
   await moveCaretToEditorEnd(page);
-  await page.keyboard.insertText(`■ ${subtitle}`);
+  await toggleBoldTypingMode(page);
+  await page.keyboard.insertText(`■ ${subtitle} ■`);
   await page.waitForTimeout(50);
+  await toggleBoldTypingMode(page);
   await applyStyleToLatestTextBlock(page, {
     textAlign: "center",
     fontWeight: "700",
     fontSize: "133%",
     wordBreak: "keep-all",
-    overflowWrap: "break-word",
+    overflowWrap: "normal",
+    wordWrap: "normal",
   });
+  await enforceBoldOnLatestTextBlock(page).catch(() => {});
 }
 
 async function insertFormattedBody(page: Page, body: string, keywords: string[]) {
@@ -1528,7 +1955,8 @@ async function insertFormattedBody(page: Page, body: string, keywords: string[])
     await applyStyleToLatestTextBlock(page, {
       textAlign: "center",
       wordBreak: "keep-all",
-      overflowWrap: "break-word",
+      overflowWrap: "normal",
+      wordWrap: "normal",
     });
     if (i < chunks.length - 1) {
       await page.keyboard.press("Enter").catch(() => {});
@@ -1567,58 +1995,46 @@ async function fillContentAndInsertImagesBySectionStructure(page: Page, request:
   let previousCount = await countEditorImages(page);
   let insertedImages = 0;
   const expectedParts: string[] = [];
+  let quoteCardImagePath = "";
 
-  const rawQuote = typeof request.quote === "string" ? request.quote : "";
-  if (rawQuote.trim()) {
-    const quoteSection = parseQuoteAndPhilosopher(rawQuote);
+  try {
+    const quoteSection = resolveQuoteSectionFromRequest(request);
+    if (quoteSection.hasInput && quoteSection.quote) {
+      quoteCardImagePath = await createQuoteCardImageFile(page, quoteSection.quote, quoteSection.philosopher);
+      if (!quoteCardImagePath) return false;
 
-    await moveCaretToEditorEnd(page);
-    await page.keyboard.insertText(`"${quoteSection.quote}"`);
-    await page.waitForTimeout(60);
-    await applyStyleToLatestTextBlock(page, {
-      textAlign: "center",
-      wordBreak: "keep-all",
-      overflowWrap: "break-word",
-    });
-    expectedParts.push(quoteSection.quote);
+      await moveCaretToEditorEnd(page);
+      const quoteImageCount = await uploadImageAtCursorAndVerify(page, quoteCardImagePath, previousCount);
+      if (quoteImageCount < 0) return false;
+      previousCount = quoteImageCount;
+      await insertSingleParagraphGap(page);
+    }
 
-    await page.keyboard.press("Enter").catch(() => {});
-    await page.waitForTimeout(60);
-    await moveCaretToEditorEnd(page);
-    await page.keyboard.insertText(`— ${quoteSection.philosopher} —`);
-    await page.waitForTimeout(60);
-    await applyStyleToLatestTextBlock(page, {
-      textAlign: "center",
-      wordBreak: "keep-all",
-      overflowWrap: "break-word",
-    });
-    expectedParts.push(quoteSection.philosopher);
+    for (let i = 0; i < imagePaths.length; i += 1) {
+      const imagePath = imagePaths[i];
+      const section = sections[i];
+      if (!imagePath || !section) return false;
 
-    await insertParagraphGap(page);
-  }
+      await moveCaretToEditorEnd(page);
+      const currentCount = await uploadImageAtCursorAndVerify(page, imagePath, previousCount);
+      if (currentCount < 0) return false;
+      previousCount = currentCount;
+      insertedImages += 1;
 
-  for (let i = 0; i < imagePaths.length; i += 1) {
-    const imagePath = imagePaths[i];
-    const section = sections[i];
-    if (!imagePath || !section) return false;
+      await insertSingleParagraphGap(page);
+      await insertFormattedSubtitle(page, section.subtitle);
+      expectedParts.push(section.subtitle);
 
-    await moveCaretToEditorEnd(page);
-    const currentCount = await uploadImageAtCursorAndVerify(page, imagePath, previousCount);
-    if (currentCount < 0) return false;
-    previousCount = currentCount;
-    insertedImages += 1;
+      await page.keyboard.press("Enter").catch(() => {});
+      await page.waitForTimeout(60);
+      await insertFormattedBody(page, section.body, section.keywords || []);
+      expectedParts.push(section.body);
 
-    await insertParagraphGap(page);
-    await insertFormattedSubtitle(page, section.subtitle);
-    expectedParts.push(section.subtitle);
-
-    await page.keyboard.press("Enter").catch(() => {});
-    await page.waitForTimeout(60);
-    await insertFormattedBody(page, section.body, section.keywords || []);
-    expectedParts.push(section.body);
-
-    await insertParagraphGap(page);
-    await insertParagraphGap(page);
+      await insertParagraphGap(page);
+      await insertParagraphGap(page);
+    }
+  } finally {
+    if (quoteCardImagePath) cleanupTempFiles([quoteCardImagePath]);
   }
 
   const hashtagSource = Array.isArray(request.hashtags) ? request.hashtags : [];
@@ -1633,7 +2049,8 @@ async function fillContentAndInsertImagesBySectionStructure(page: Page, request:
     await applyStyleToLatestTextBlock(page, {
       textAlign: "center",
       wordBreak: "keep-all",
-      overflowWrap: "break-word",
+      overflowWrap: "normal",
+      wordWrap: "normal",
     });
     expectedParts.push(firstLine);
 
@@ -1645,7 +2062,8 @@ async function fillContentAndInsertImagesBySectionStructure(page: Page, request:
       await applyStyleToLatestTextBlock(page, {
         textAlign: "center",
         wordBreak: "keep-all",
-        overflowWrap: "break-word",
+        overflowWrap: "normal",
+        wordWrap: "normal",
       });
       expectedParts.push(secondLine);
     }
@@ -2008,7 +2426,7 @@ async function fillContentAndInsertImagesByParagraphPlan(page: Page, content: st
   }
 
   if (plan.imageIndexesBeforeFirstParagraph.length > 0 && plan.paragraphs.length > 0) {
-    await insertParagraphGap(page);
+    await insertSingleParagraphGap(page);
   }
 
   for (let paragraphIndex = 0; paragraphIndex < plan.paragraphs.length; paragraphIndex += 1) {
@@ -2031,7 +2449,7 @@ async function fillContentAndInsertImagesByParagraphPlan(page: Page, content: st
         insertedImages += 1;
         await moveCaretToEditorEnd(page);
       }
-      await insertParagraphGap(page);
+      await insertSingleParagraphGap(page);
     } else {
       await insertParagraphGap(page);
     }
@@ -2651,10 +3069,19 @@ async function publishToNaverOnce(request: PublishRequest, attempt: number): Pro
     }
 
     tempImageFiles = prepareImageFiles(request.images || []);
-    const canUseSectionStructure =
-      tempImageFiles.length > 0 &&
-      Array.isArray(request.sections) &&
-      request.sections.length === tempImageFiles.length;
+    const requestedImageCount = Array.isArray(request.images) ? request.images.length : 0;
+    if (requestedImageCount > 0 && tempImageFiles.length !== requestedImageCount) {
+      const screenshotPath = await saveFailureScreenshot(page, "POST_FAIL");
+      return finish({
+        ok: false,
+        reason: "POST_FAIL",
+        postUrl: "",
+        contentLength: 0,
+        screenshotPath,
+        message: `이미지 준비에 실패했습니다. 요청 ${requestedImageCount}장 중 ${tempImageFiles.length}장만 처리되었습니다.`,
+      });
+    }
+    const canUseSectionStructure = tempImageFiles.length > 0;
 
     const contentOk = canUseSectionStructure
       ? await fillContentAndInsertImagesBySectionStructure(page, request, tempImageFiles)
@@ -2751,6 +3178,8 @@ async function publishToNaverOnce(request: PublishRequest, attempt: number): Pro
         });
       }
     }
+
+    await enforceNoWordBreakAcrossEditor(page).catch(() => {});
 
     const publishLayerOpened = await openPublishLayer(page);
     if (!publishLayerOpened) {

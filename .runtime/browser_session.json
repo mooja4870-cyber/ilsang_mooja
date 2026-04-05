@@ -1,0 +1,212 @@
+{
+  "cookies": [
+    {
+      "name": "nid_slevel",
+      "value": "1",
+      "domain": ".nid.naver.com",
+      "path": "/",
+      "expires": 1806837660,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "NAC",
+      "value": "2f5FCAiKPHTIA",
+      "domain": ".naver.com",
+      "path": "/",
+      "expires": 1809861659.672759,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "NACT",
+      "value": "1",
+      "domain": ".naver.com",
+      "path": "/",
+      "expires": 1775388059.674599,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "NNB",
+      "value": "ZSAOVXY46TIGS",
+      "domain": ".naver.com",
+      "path": "/",
+      "expires": 1809916550.554908,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "NID_JST",
+      "value": "O282pEkOkxabIu5R80KHRVFh950hyD7gDOEl8/b8P6R380dHq+NvY0HrQkGcx2UaZHtWPDq7AoFGxDU4fTcCQZdoOmN0HR319xkfpvZg5mQAH/5EpIVycDLf0dvTCBtZeulSQvpUDL0r3qtytppbyokidA2DAHnKbwEfQZkPTFk=",
+      "domain": ".nid.naver.com",
+      "path": "/",
+      "expires": 1792581660.570867,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "nid_inf",
+      "value": "1115732611",
+      "domain": ".naver.com",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "NID_AUT",
+      "value": "dVszJ2dNgsziZ/RauEg2AQrvucuZge+RMadR/TxAcPCmbazHHtA2w0b7FAxdMfFL",
+      "domain": ".naver.com",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "stat_yn",
+      "value": "1",
+      "domain": ".blog.naver.com",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "BA_DEVICE",
+      "value": "9ecdc8e1-e963-475c-9f39-019647944ade",
+      "domain": ".blog.naver.com",
+      "path": "/",
+      "expires": 1809861689,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "SRT30",
+      "value": "1775355919",
+      "domain": ".naver.com",
+      "path": "/",
+      "expires": 1775358350.555011,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "SRT5",
+      "value": "1775355919",
+      "domain": ".naver.com",
+      "path": "/",
+      "expires": 1775356850.555037,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "NID_SES",
+      "value": "AAABn90RtxJ4fOuPhLBxOj+b6jJbTAITIQB/5xGjSRfr6oWnK3eF5EW/BRnZjpmFRam+ejZdCbPdWE4vAgzJVVx2HxJCT7u2MzxFTcGC0RiF5zVPLmFnZPCkeOB4o+guxaKukTmU5OpKlbr/yM9tLE9noXf53xQS/taFgW4vE9pTgO2gGGDR0jDhgt/toHcCAQ9715JCtzuEBdDDzA6UgOBFsKyvbKwbtn9yVp/X/XxkPk0PPGY2J41x9nNWh2hy8agW6EutshDckmnzLT9Rrp4Fs0YP1YkJ31WTinYkKZP1rntEk/oKuQ7UiPwYYGdxfu5CcJduc6aSptGXSCTpYVnEje9V/Ov6HEnkKQdnQCmkdTDYNDuba0QfNl12rdJLI4z4/1gNF6Pp83g+6plEoTQrIC1cLfRNpLMy/y29TzIQ3ttgb/c89Cde4Tp+ycqWIPm4Nm141BT+heHChU0+Hb/kptAAlXRqUqYBEFqXqrS0OPY9F3eHtbPPT9CLlOlcxzm/Flth7bYPo2v1hju38fecrN1mrq3rHgj1ykiJLpskWmvK",
+      "domain": ".naver.com",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "JSESSIONID",
+      "value": "1B05630C3FBCAEA20BDBDC3F84534C87.jvm1",
+      "domain": "blog.naver.com",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "BUC",
+      "value": "LTaXMeAPwO0NsV4boz6-RbM1bRiGe8Kyk0owu9sc5L4=",
+      "domain": ".naver.com",
+      "path": "/",
+      "expires": 1809916550.555058,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "None"
+    }
+  ],
+  "origins": [
+    {
+      "origin": "https://blog.naver.com",
+      "localStorage": [
+        {
+          "name": "se3#AI_MARK_TOOLTIP//STORAGE",
+          "value": "{\"alreadyOpened\":true}"
+        },
+        {
+          "name": "glad_loader_policy_info",
+          "value": "{\"regDate\":\"2026-04-04T11:21:28.525Z\",\"data\":{\"versionInfo\":{\"policyVersion\":\"260319.01\",\"loaderVersion\":\"1.6.0\",\"sdkVersion\":\"3.8.0\"},\"sdkInfo\":{\"latestRatio\":1,\"config\":{}},\"sentryInfo\":{\"enableSentry\":false,\"config\":{\"sampleRate\":0.001}}}}"
+        },
+        {
+          "name": "se3#SE_COPIED_DATA",
+          "value": "{\"docId\":\"TEMP-SE-fc2b6981-d2d1-4ce3-af59-a41989d9efb1\",\"copyData\":[{\"id\":\"\",\"layout\":\"default\",\"ctype\":\"text\",\"value\":[{\"id\":\"\",\"ctype\":\"paragraph\",\"nodes\":[{\"id\":\"\",\"ctype\":\"textNode\",\"value\":\"■ \",\"style\":{\"ctype\":\"nodeStyle\",\"fontFamily\":\"nanumbareunhipi\",\"fontSizeCode\":\"fs16\",\"strikeThrough\":false}}],\"style\":{\"ctype\":\"paragraphStyle\",\"align\":\"center\",\"lineHeight\":1.7}}]}]}"
+        },
+        {
+          "name": "se3#highlight-tooltip-not-sponsored-button-2026-4",
+          "value": "shown"
+        },
+        {
+          "name": "BA_DEVICE",
+          "value": "{\"deviceId\":\"9ecdc8e1-e963-475c-9f39-019647944ade\"}"
+        },
+        {
+          "name": "__tmp_____persist___",
+          "value": "___persist___"
+        },
+        {
+          "name": "3fbddd8d15feb0d3",
+          "value": "cc1efb23505cfd905b1fdd72ec70a7602f25ac77243c206fde7035bd9859737d"
+        },
+        {
+          "name": "se3#HELP_PANEL//STORAGE",
+          "value": "{\"alreadyOpened\":true}"
+        },
+        {
+          "name": "d6277b37e628876c",
+          "value": "3c85cf32595fbcf099c97bd30c83627c4b2aa9719b9d05bbaa4b3c253d63803d"
+        },
+        {
+          "name": "gfp_uuid_iv",
+          "value": "4f540eb1-1aaa-4884-b585-48f6b44152ae"
+        }
+      ]
+    },
+    {
+      "origin": "https://nid.naver.com",
+      "localStorage": [
+        {
+          "name": "glad_loader_policy_info",
+          "value": "{\"regDate\":\"2026-04-04T11:20:59.565Z\",\"data\":{\"versionInfo\":{\"policyVersion\":\"260319.01\",\"loaderVersion\":\"1.6.0\",\"sdkVersion\":\"3.8.0\"},\"sdkInfo\":{\"latestRatio\":1,\"config\":{}},\"sentryInfo\":{\"enableSentry\":false,\"config\":{\"sampleRate\":0.001}}}}"
+        },
+        {
+          "name": "3fbddd8d15feb0d3",
+          "value": "cc1efb23505cfd905b1fdd72ec70a7602f25ac77243c206fde7035bd9859737d"
+        },
+        {
+          "name": "d6277b37e628876c",
+          "value": "3c85cf32595fbcf099c97bd30c83627c4b2aa9719b9d05bbaa4b3c253d63803d"
+        },
+        {
+          "name": "gfp_uuid_iv",
+          "value": "f1938160-04c3-4fe7-9eb1-244d76d5c337"
+        }
+      ]
+    }
+  ]
+}

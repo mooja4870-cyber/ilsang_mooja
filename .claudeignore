@@ -1,0 +1,141 @@
+# =============================
+# Claude Context Token Saver
+# =============================
+
+# Dependencies
+node_modules/
+bower_components/
+vendor/
+.pnpm-store/
+.npm/
+.yarn/
+
+# Lockfiles (large, rarely needed in chat context)
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+bun.lockb
+
+# Build / output
+.next/
+.nuxt/
+.svelte-kit/
+dist/
+build/
+out/
+release/
+debug/
+.cache/
+.parcel-cache/
+.turbo/
+.tmp/
+tmp/
+temp/
+
+# Coverage / reports
+coverage/
+.nyc_output/
+playwright-report/
+test-results/
+reports/
+
+# Runtime / process
+.runtime/
+*.pid
+*.pid.lock
+*.seed
+*.sock
+
+# Logs
+*.log
+logs/
+log/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+*.pem
+*.key
+*.p12
+*.crt
+
+# Git / SCM
+.git/
+.gitignore
+.gitattributes
+.gitmodules
+.github/
+
+# IDE / editor / OS
+.vscode/
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Language caches
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.venv/
+venv/
+env/
+
+# JS / TS caches
+*.tsbuildinfo
+.eslintcache
+.stylelintcache
+vite.svg
+
+# Database / data dumps
+*.db
+*.sqlite
+*.sqlite3
+*.sql
+*.dump
+*.bak
+
+# Archives / binaries
+*.7z
+*.bz2
+*.gz
+*.rar
+*.tar
+*.tgz
+*.zip
+*.iso
+
+# Media / documents
+*.pdf
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.svg
+*.mp3
+*.wav
+*.flac
+*.mp4
+*.mov
+*.avi
+*.mkv
+
+# Infra / containers
+.docker/
+docker-compose*.yml
+
+# Misc generated
+*.local
+*.swp
+*.swo
+*.tmp

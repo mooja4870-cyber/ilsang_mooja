@@ -1,5 +1,5 @@
-import React, { useState, useCallback } from 'react';
-import { useDropzone } from 'react-dropzone';
+import React, { useState, useCallback, useMemo } from 'react';
+import { useDropzone, FileRejection } from 'react-dropzone';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Camera, 
@@ -11,12 +11,11 @@ import {
   CheckCircle2, 
   X, 
   Plus,
-  Quote,
   ExternalLink,
   Sparkles
 } from 'lucide-react';
 import { cn } from './lib/utils';
-import { LOCATIONS, PURPOSES, LENGTH_OPTIONS, UserInput, BlogPost } from './types';
+import { LOCATIONS, PURPOSES, UserInput, BlogPost } from './types';
 import { generateBlogPost } from './services/geminiService';
 import axios from 'axios';
 
@@ -61,7 +60,46 @@ function calculatePostInfo(imageCount: number) {
 
 function normalizeBodyWithSentenceBreaks(body: string) {
   const normalized = body.replace(/\s+/g, ' ').trim();
-  const limited = normalized.length > 130 ? normalized.slice(0, 130).trim() : normalized;
+  const PREFERRED_MIN = 60;
+  const PREFERRED_MAX = 80;
+  const HARD_MAX = 160;
+  let limited = normalized;
+
+  if (normalized.length > PREFERRED_MAX) {
+    const preferredWindow = normalized.slice(PREFERRED_MIN, PREFERRED_MAX + 1);
+    const preferredSentenceEndOffset = preferredWindow.search(/[.!?。！？]/);
+    if (preferredSentenceEndOffset >= 0) {
+      limited = normalized.slice(0, PREFERRED_MIN + preferredSentenceEndOffset + 1).trim();
+    } else {
+      const extendedWindow = normalized.slice(PREFERRED_MAX, HARD_MAX + 1);
+      const extendedSentenceEndOffset = extendedWindow.search(/[.!?。！？]/);
+      if (extendedSentenceEndOffset >= 0) {
+        // 기본 범위(60~80)로 문장 마무리가 어려운 경우에만 160자까지 확장
+        limited = normalized.slice(0, PREFERRED_MAX + extendedSentenceEndOffset + 1).trim();
+      } else if (normalized.length > HARD_MAX) {
+        const hardLimited = normalized.slice(0, HARD_MAX).trim();
+        const lastSpace = hardLimited.lastIndexOf(' ');
+        limited = lastSpace >= PREFERRED_MIN ? hardLimited.slice(0, lastSpace).trim() : hardLimited;
+      } else {
+        limited = normalized;
+      }
+    }
+  }
+
+  const paddingPool = [
+    ' 오늘의 공기가 한층 더 포근하게 느껴졌다.',
+    ' 작은 장면 하나가 오래 마음에 남았다.',
+    ' 익숙한 풍경도 새롭게 보이는 순간이었다.',
+  ];
+  let paddingIndex = 0;
+  while (limited.length < PREFERRED_MIN && paddingIndex < 10) {
+    const pad = paddingPool[paddingIndex % paddingPool.length];
+    const available = PREFERRED_MAX - limited.length;
+    if (available <= 0) break;
+    limited = `${limited}${pad.slice(0, available)}`.trim();
+    paddingIndex += 1;
+  }
+
   return limited.replace(/([.!?。！？])\s*/g, '$1\n').replace(/\n{2,}/g, '\n').trim();
 }
 
@@ -69,22 +107,48 @@ function normalizeQuoteText(quote: string) {
   return quote.replace(/^["'“”]+|["'“”]+$/g, '').trim();
 }
 
+const DASH_CHAR_CLASS = '[-‐‑‒–—―−]';
+const STRICT_DASH_AUTHOR_REGEX = new RegExp(`^${DASH_CHAR_CLASS}\\s*([^\\-‐‑‒–—―−]+?)\\s*${DASH_CHAR_CLASS}$`, 'u');
+const LOOSE_DASH_AUTHOR_REGEX = new RegExp(`${DASH_CHAR_CLASS}\\s*([^\\-‐‑‒–—―−]+?)\\s*${DASH_CHAR_CLASS}`, 'u');
+const STRIP_DASH_AUTHOR_REGEX = new RegExp(`${DASH_CHAR_CLASS}\\s*[^\\-‐‑‒–—―−]+?\\s*${DASH_CHAR_CLASS}`, 'gu');
+
+function isStandaloneQuoteMarker(line: string) {
+  return /^["'“”‘’\s]+$/.test(line.trim());
+}
+
+function extractPhilosopherName(line: string) {
+  const strictMatch = line.match(STRICT_DASH_AUTHOR_REGEX);
+  if (strictMatch?.[1]) return strictMatch[1].trim();
+
+  const looseMatch = line.match(LOOSE_DASH_AUTHOR_REGEX);
+  return (looseMatch?.[1] || '').trim();
+}
+
 function parseQuoteSection(rawQuote: string): QuoteSectionDraft {
   const cleaned = rawQuote.trim();
   const lines = cleaned.split('\n').map((line) => line.trim()).filter(Boolean);
-  const merged = lines.join(' ');
+  const merged = lines.join(' ').replace(/\s+/g, ' ').trim();
 
-  const linePhilosopher = lines.find((line) => /[—-].+[—-]/.test(line)) || '';
-  const match = linePhilosopher.match(/[—-]\s*([^—-]+?)\s*[—-]/);
-  const philosopher = (match?.[1] || '').trim() || '작자 미상';
+  const linePhilosopher =
+    lines.find((line) => STRICT_DASH_AUTHOR_REGEX.test(line)) ||
+    lines.find((line) => LOOSE_DASH_AUTHOR_REGEX.test(line)) ||
+    '';
+  const philosopher = extractPhilosopherName(linePhilosopher) || '작자 미상';
 
-  let quoteCandidate = lines.find((line) => line !== linePhilosopher) || merged;
-  if (quoteCandidate === linePhilosopher) quoteCandidate = '';
-  quoteCandidate = quoteCandidate.replace(/[—-]\s*[^—-]+?\s*[—-]/g, '').trim();
-  quoteCandidate = normalizeQuoteText(quoteCandidate);
+  const quoteLineCandidates = lines
+    .filter((line) => line !== linePhilosopher)
+    .filter((line) => !isStandaloneQuoteMarker(line))
+    .map((line) => normalizeQuoteText(line))
+    .filter(Boolean);
 
+  let quoteCandidate = quoteLineCandidates.join(' ').replace(/\s+/g, ' ').trim();
   if (!quoteCandidate) {
-    quoteCandidate = normalizeQuoteText(merged.replace(/[—-]\s*[^—-]+?\s*[—-]/g, ''));
+    const stripped = merged
+      .replace(STRIP_DASH_AUTHOR_REGEX, ' ')
+      .replace(/^["'“”‘’]+|["'“”‘’]+$/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    quoteCandidate = normalizeQuoteText(stripped);
   }
   if (!quoteCandidate) quoteCandidate = '오늘의 순간을 기록하는 마음으로 하루를 담아봅니다.';
 
@@ -146,6 +210,7 @@ function parseSection(sectionText: string, index: number): StructuredSectionDraf
   const subtitle = firstLine
     .replace(/^#+\s*/, '')
     .replace(/^■\s*/, '')
+    .replace(/\s*■$/, '')
     .replace(/^소제목[:：]?\s*/i, '')
     .trim() || `소제목 ${index + 1}`;
 
@@ -221,6 +286,205 @@ function renderHighlightedBody(body: string, keywords: string[]) {
   ));
 }
 
+function wrapCanvasTextByWidth(ctx: CanvasRenderingContext2D, text: string, maxWidth: number) {
+  const characters = Array.from(text.trim());
+  const lines: string[] = [];
+  let current = '';
+
+  for (const ch of characters) {
+    const trial = `${current}${ch}`;
+    if (current && ctx.measureText(trial).width > maxWidth) {
+      lines.push(current);
+      current = ch;
+    } else {
+      current = trial;
+    }
+  }
+
+  if (current) lines.push(current);
+  if (lines.length <= 3) return lines;
+  return [lines[0], lines[1], `${lines.slice(2).join('').slice(0, 22)}…`];
+}
+
+function buildQuoteCardDataUrl(quote: string, philosopher: string) {
+  if (typeof document === 'undefined') return '';
+
+  const pastelPalette = [
+    '#F9EAEA',
+    '#EAF3F9',
+    '#EEF8EE',
+    '#FFF4E6',
+    '#F3EDFF',
+    '#EAF7F5',
+    '#FFF0F5',
+    '#F4F4E8',
+  ];
+  const backgroundColor = pastelPalette[Math.floor(Math.random() * pastelPalette.length)];
+
+  const canvas = document.createElement('canvas');
+  canvas.width = 1200;
+  canvas.height = 420;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return '';
+
+  ctx.fillStyle = backgroundColor;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  const safeQuote = quote.trim() || '오늘의 순간을 기록하는 마음으로 하루를 담아봅니다.';
+  ctx.fillStyle = '#555555';
+  ctx.font = '600 54px "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif';
+  const quoteLines = wrapCanvasTextByWidth(ctx, safeQuote, canvas.width * 0.82);
+  const lineHeight = 66;
+  const quoteStartY = 165 - ((quoteLines.length - 1) * lineHeight) / 2;
+  quoteLines.forEach((line, idx) => {
+    ctx.fillText(line, canvas.width / 2, quoteStartY + idx * lineHeight);
+  });
+
+  const safePhilosopher = philosopher.trim() || '작자 미상';
+  ctx.fillStyle = '#4B4B4B';
+  ctx.font = '500 42px "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif';
+  ctx.fillText(`- ${safePhilosopher} -`, canvas.width / 2, quoteStartY + quoteLines.length * lineHeight + 46);
+
+  return canvas.toDataURL('image/png');
+}
+
+const IMAGE_MAX_SIZE = 1280;
+const IMAGE_JPEG_QUALITY = 0.82;
+
+function getResizedDimensions(width: number, height: number, maxSize = IMAGE_MAX_SIZE) {
+  let nextWidth = width;
+  let nextHeight = height;
+
+  if (nextWidth > nextHeight) {
+    if (nextWidth > maxSize) {
+      nextHeight *= maxSize / nextWidth;
+      nextWidth = maxSize;
+    }
+  } else if (nextHeight > maxSize) {
+    nextWidth *= maxSize / nextHeight;
+    nextHeight = maxSize;
+  }
+
+  return {
+    width: Math.max(1, Math.round(nextWidth)),
+    height: Math.max(1, Math.round(nextHeight)),
+  };
+}
+
+function drawOptimizedJpeg(source: CanvasImageSource, sourceWidth: number, sourceHeight: number, fallback = '') {
+  const canvas = document.createElement('canvas');
+  const { width, height } = getResizedDimensions(sourceWidth, sourceHeight);
+  canvas.width = width;
+  canvas.height = height;
+
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return fallback;
+
+  ctx.drawImage(source, 0, 0, width, height);
+  return canvas.toDataURL('image/jpeg', IMAGE_JPEG_QUALITY);
+}
+
+function loadImageElement(src: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('이미지 디코딩 실패'));
+    img.src = src;
+  });
+}
+
+function readFileAsDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = typeof reader.result === 'string' ? reader.result : '';
+      if (!dataUrl) {
+        reject(new Error('이미지 데이터를 읽지 못했습니다.'));
+        return;
+      }
+      resolve(dataUrl);
+    };
+    reader.onerror = () => reject(new Error('파일 읽기 실패'));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function readFileAsDataUrlFromArrayBuffer(file: File) {
+  const buffer = await file.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  let binary = '';
+
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+
+  const mimeType = file.type && file.type.trim() ? file.type : 'application/octet-stream';
+  return `data:${mimeType};base64,${btoa(binary)}`;
+}
+
+async function readFileAsDataUrlSafe(file: File) {
+  try {
+    return await readFileAsDataUrl(file);
+  } catch {
+    return await readFileAsDataUrlFromArrayBuffer(file);
+  }
+}
+
+function optimizeImageDataUrl(dataUrl: string) {
+  return new Promise<string>((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        resolve(drawOptimizedJpeg(img, img.width, img.height, dataUrl));
+      } catch {
+        // 캔버스 변환 실패 시 원본 유지
+        resolve(dataUrl);
+      }
+    };
+    img.onerror = () => {
+      // 일부 포맷 디코딩 실패 시 원본 유지
+      resolve(dataUrl);
+    };
+    img.src = dataUrl;
+  });
+}
+
+async function optimizeImageFromObjectUrl(file: File) {
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const img = await loadImageElement(objectUrl);
+    return drawOptimizedJpeg(img, img.naturalWidth || img.width, img.naturalHeight || img.height, '');
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+async function processUploadFile(file: File) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const optimizedByObjectUrl = await optimizeImageFromObjectUrl(file);
+      if (optimizedByObjectUrl) return optimizedByObjectUrl;
+    } catch {
+      // object URL 디코딩 실패 시 data URL 경로로 폴백
+    }
+
+    try {
+      const original = await readFileAsDataUrlSafe(file);
+      const optimized = await optimizeImageDataUrl(original);
+      if (optimized) return optimized;
+    } catch {
+      // 읽기 실패 시 다음 시도로 재시도
+    }
+  }
+
+  return '';
+}
+
 export default function App() {
   const [images, setImages] = useState<string[]>([]);
   const [selectedLocations, setSelectedLocations] = useState<string[]>([]);
@@ -230,17 +494,17 @@ export default function App() {
   const [otherPurpose, setOtherPurpose] = useState('');
   const [isOtherPurpose, setIsOtherPurpose] = useState(false);
   const [peopleInput, setPeopleInput] = useState('');
-  const [lengthOption, setLengthOption] = useState(LENGTH_OPTIONS[0]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState('AI가 글을 작성 중입니다...');
   const [generatedPost, setGeneratedPost] = useState<BlogPost | null>(null);
   const [isPublishing, setIsPublishing] = useState(false);
-  const [publishResult, setPublishResult] = useState<{ success: boolean; url: string } | null>(null);
+  const [publishResult, setPublishResult] = useState<{ success: boolean; url: string; editorUrl?: string } | null>(null);
   const [isStep1Confirmed, setIsStep1Confirmed] = useState(false);
 
-  const onDrop = useCallback((acceptedFiles: File[]) => {
-    if (images.length + acceptedFiles.length > MAX_IMAGES) {
-      alert('첨부 가능한 사진은 최대 10장까지입니다.');
+  const onDrop = useCallback(async (acceptedFiles: File[], fileRejections: FileRejection[]) => {
+    const incomingCount = acceptedFiles.length + fileRejections.length;
+    if (images.length + incomingCount > MAX_IMAGES || fileRejections.length > 0) {
+      alert('이미지는 10개 까지 가능합니다.');
     }
 
     const remainingSlots = MAX_IMAGES - images.length;
@@ -248,51 +512,29 @@ export default function App() {
 
     if (filesToProcess.length === 0) return;
 
-    Promise.all(
-      filesToProcess.map(file => {
-        return new Promise<string>((resolve) => {
-          const reader = new FileReader();
-          reader.onload = () => {
-            const img = new Image();
-            img.onload = () => {
-              const canvas = document.createElement('canvas');
-              const MAX_SIZE = 1024;
-              let width = img.width;
-              let height = img.height;
+    const newImages: string[] = [];
+    for (const file of filesToProcess) {
+      let processed = await processUploadFile(file);
+      if (!processed) {
+        processed = await processUploadFile(file);
+      }
+      if (processed) newImages.push(processed);
+    }
 
-              if (width > height) {
-                if (width > MAX_SIZE) {
-                  height *= MAX_SIZE / width;
-                  width = MAX_SIZE;
-                }
-              } else {
-                if (height > MAX_SIZE) {
-                  width *= MAX_SIZE / height;
-                  height = MAX_SIZE;
-                }
-              }
+    const failedCount = filesToProcess.length - newImages.length;
+    if (failedCount > 0) {
+      alert(`이미지 ${failedCount}장을 처리하지 못했습니다. 다른 파일로 다시 시도해주세요.`);
+    }
 
-              canvas.width = width;
-              canvas.height = height;
-              const ctx = canvas.getContext('2d');
-              ctx?.drawImage(img, 0, 0, width, height);
-              resolve(canvas.toDataURL('image/jpeg', 0.8));
-            };
-            img.src = reader.result as string;
-          };
-          reader.readAsDataURL(file);
-        });
-      })
-    ).then(newImages => {
+    if (newImages.length > 0) {
       setImages(prev => [...prev, ...newImages].slice(0, MAX_IMAGES));
       setIsStep1Confirmed(false);
-    });
+    }
   }, [images.length]);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
     accept: { 'image/*': [] },
-    maxFiles: MAX_IMAGES,
     multiple: true,
     disabled: images.length >= MAX_IMAGES
   } as any);
@@ -330,11 +572,11 @@ export default function App() {
     const contentLines: string[] = [];
 
     if (quoteSection.quote) {
-      contentLines.push(`"${quoteSection.quote}"\n— ${quoteSection.philosopher} —`);
+      contentLines.push(`"${quoteSection.quote}"\n- ${quoteSection.philosopher} -`);
     }
 
     structuredSections.forEach((section) => {
-      contentLines.push(`■ ${section.subtitle}\n${section.body}`);
+      contentLines.push(`■ ${section.subtitle} ■\n${section.body}`);
     });
 
     if (hashtags.length > 0) {
@@ -345,13 +587,16 @@ export default function App() {
       title: post.title,
       content: contentLines.join('\n\n'),
       images,
-      quote: `"${quoteSection.quote}"\n— ${quoteSection.philosopher} —`,
+      quote: `"${quoteSection.quote}"\n- ${quoteSection.philosopher} -`,
+      quoteText: quoteSection.quote,
+      quoteAuthor: quoteSection.philosopher,
       sections: structuredSections,
       hashtags,
       blogType: 'Naver',
     });
 
     setPublishResult(response.data);
+    return response.data as { success?: boolean; url?: string; editorUrl?: string };
   };
 
   const handleGenerate = async () => {
@@ -409,11 +654,22 @@ export default function App() {
         images
       };
       const post = await generateBlogPost(input);
-      setGeneratedPost(post);
-
       setIsPublishing(true);
-      await publishGeneratedPost(post);
+      const publishData = await publishGeneratedPost(post);
       setIsPublishing(false);
+
+      const isMobileDevice = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+      if (isMobileDevice) {
+        const fallbackEditorUrl = 'https://blog.naver.com/checknpick/postwrite';
+        const targetEditorUrl =
+          typeof publishData?.editorUrl === 'string' && publishData.editorUrl.trim().length > 0
+            ? publishData.editorUrl
+            : fallbackEditorUrl;
+        window.location.href = targetEditorUrl;
+        return;
+      }
+
+      setGeneratedPost(post);
 
       // Scroll to result
       setTimeout(() => {
@@ -448,6 +704,11 @@ export default function App() {
 
   const postInfo = calculatePostInfo(images.length);
   const quoteSection = generatedPost ? parseQuoteSection(generatedPost.quote || '') : null;
+  const quoteCardImage = useMemo(() => {
+    if (!quoteSection) return '';
+    return buildQuoteCardDataUrl(quoteSection.quote || '', quoteSection.philosopher || '작자 미상');
+  }, [quoteSection?.quote, quoteSection?.philosopher]);
+  const hasUploadedImages = images.length > 0;
 
   return (
     <div className="min-h-screen bg-[#F8F9FA] text-[#1A1A1A] font-sans pb-20">
@@ -498,7 +759,7 @@ export default function App() {
                 )}
               </div>
               
-              <div className="grid grid-cols-3 gap-3">
+              <div className={cn(hasUploadedImages ? "grid grid-cols-3 gap-3" : "flex justify-center")}>
                 {images.map((img, idx) => (
                   <div key={idx} className="relative aspect-square rounded-xl overflow-hidden group shadow-sm border border-gray-100">
                     <img src={img} alt={`upload-${idx}`} className="w-full h-full object-cover" />
@@ -515,6 +776,7 @@ export default function App() {
                     {...getRootProps()} 
                     className={cn(
                       "aspect-square rounded-xl border-2 border-dashed flex flex-col items-center justify-center cursor-pointer transition-all",
+                      hasUploadedImages ? "" : "w-full max-w-[220px]",
                       isDragActive ? "border-black bg-gray-50" : "border-gray-200 hover:border-gray-300 bg-white"
                     )}
                   >
@@ -522,7 +784,7 @@ export default function App() {
                     <div className="w-10 h-10 bg-gray-50 rounded-full flex items-center justify-center mb-2 group-hover:bg-gray-100 transition-colors">
                       <Plus className="w-6 h-6 text-gray-400" />
                     </div>
-                    <span className="text-xs text-gray-400 font-bold">사진 추가</span>
+                    <span className="block w-full text-center text-xs text-gray-400 font-bold">사진 추가</span>
                   </div>
                 )}
               </div>
@@ -681,44 +943,6 @@ export default function App() {
               </div>
             </section>
 
-            {/* Step 5: Length */}
-            <section className="space-y-4">
-              <div className="flex items-center gap-2 text-gray-500">
-                <Target className="w-5 h-5" />
-                <h2 className="text-sm font-semibold uppercase tracking-wider">Step 5. 분량 설정</h2>
-              </div>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                {LENGTH_OPTIONS.map(opt => {
-                  const isSmart = opt.value === 0;
-                  let calculatedSections = opt.sections;
-                  let calculatedLength = opt.value;
-                  
-                  if (isSmart) {
-                    calculatedSections = postInfo.sectionCount;
-                    calculatedLength = postInfo.totalChars;
-                  }
-                  
-                  return (
-                    <button
-                      key={opt.label}
-                      onClick={() => setLengthOption(opt)}
-                      className={cn(
-                        "p-4 rounded-xl border text-center transition-all",
-                        lengthOption.label === opt.label
-                          ? "border-black bg-black text-white shadow-lg shadow-black/10"
-                          : "border-gray-200 bg-white text-gray-600 hover:border-gray-300"
-                      )}
-                    >
-                      <div className="text-sm font-bold">{opt.label}</div>
-                      <div className="text-[10px] opacity-60 uppercase tracking-tighter mt-1">
-                        {isSmart ? `약 ${calculatedLength}자 / ${calculatedSections} Sections` : `${opt.sections} Sections`}
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            </section>
-
             {/* Generate Button */}
             <button
               onClick={handleGenerate}
@@ -733,7 +957,7 @@ export default function App() {
               ) : (
                 <>
                   <Send className="w-5 h-5" />
-                  STEP 2. 네이버 블로그 자동 포스팅
+                  네이버 블로그 자동 포스팅 실핼 !
                 </>
               )}
             </button>
@@ -747,7 +971,7 @@ export default function App() {
             {/* Generated Content View */}
             <article
               className="bg-white rounded-3xl p-8 shadow-sm border border-gray-100 space-y-8"
-              style={{ wordBreak: 'keep-all', overflowWrap: 'break-word' }}
+              style={{ wordBreak: 'keep-all', overflowWrap: 'normal', wordWrap: 'normal' }}
             >
               <header className="space-y-6">
                 <div className="flex flex-wrap gap-2">
@@ -756,7 +980,7 @@ export default function App() {
                   ))}
                 </div>
                 <div className="flex items-center justify-between">
-                  <h1 className="text-3xl font-black leading-tight tracking-tight flex-1 text-center" style={{ wordBreak: 'keep-all', overflowWrap: 'break-word' }}>
+                  <h1 className="text-3xl font-black leading-tight tracking-tight flex-1 text-center" style={{ wordBreak: 'keep-all', overflowWrap: 'normal', wordWrap: 'normal' }}>
                     {generatedPost.title}
                   </h1>
                   <div className="ml-4 px-3 py-1 bg-black/5 rounded-full shrink-0">
@@ -765,13 +989,18 @@ export default function App() {
                     </span>
                   </div>
                 </div>
-                <div className="relative py-8 px-10 bg-gray-50 rounded-2xl">
-                  <Quote className="absolute top-4 left-4 w-6 h-6 text-gray-200" />
-                  <p className="text-lg font-serif italic text-center text-gray-700 leading-relaxed whitespace-pre-wrap" style={{ wordBreak: 'keep-all', overflowWrap: 'break-word' }}>
-                    "{quoteSection?.quote || ''}"
-                    {'\n'}
-                    — {quoteSection?.philosopher || '작자 미상'} —
-                  </p>
+                <div className="rounded-2xl overflow-hidden border border-gray-200 bg-gray-100">
+                  {quoteCardImage ? (
+                    <img
+                      src={quoteCardImage}
+                      alt="철학자 명언 이미지"
+                      className="w-full h-auto block"
+                    />
+                  ) : (
+                    <p className="py-8 text-center text-gray-600 whitespace-pre-wrap">
+                      "{quoteSection?.quote || ''}"{'\n'}- {quoteSection?.philosopher || '작자 미상'} -
+                    </p>
+                  )}
                 </div>
               </header>
 
@@ -788,10 +1017,10 @@ export default function App() {
                         />
                       </div>
                     )}
-                    <h3 className="text-center font-bold text-[133%]" style={{ wordBreak: 'keep-all', overflowWrap: 'break-word' }}>
-                      ■ {section.subtitle}
+                    <h3 className="text-center font-bold text-[133%]" style={{ wordBreak: 'keep-all', overflowWrap: 'normal', wordWrap: 'normal' }}>
+                      ■ {section.subtitle} ■
                     </h3>
-                    <p className="text-gray-700 leading-relaxed text-lg whitespace-pre-wrap text-center" style={{ wordBreak: 'keep-all', overflowWrap: 'break-word' }}>
+                    <p className="text-gray-700 leading-relaxed text-lg whitespace-pre-wrap text-center" style={{ wordBreak: 'keep-all', overflowWrap: 'normal', wordWrap: 'normal' }}>
                       {renderHighlightedBody(section.body, section.keywords)}
                     </p>
                   </section>

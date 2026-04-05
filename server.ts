@@ -138,6 +138,10 @@ async function runPublishJob(jobId: string, title: string, content: string, imag
 async function startServer() {
   const app = express();
   const PORT = 3000;
+  const naverBlogId = (process.env.NAVER_BLOG_ID || "").trim();
+  const naverEditorUrl = naverBlogId
+    ? `https://blog.naver.com/${encodeURIComponent(naverBlogId)}/postwrite`
+    : "https://blog.naver.com";
 
   app.use(express.json({ limit: '50mb' }));
 
@@ -149,7 +153,7 @@ async function startServer() {
   });
 
   app.post("/api/publish", async (req, res) => {
-    const { title, content, images, quote, sections, hashtags } = req.body || {};
+    const { title, content, images, quote, quoteText, quoteAuthor, sections, hashtags } = req.body || {};
     const normalizedContent = typeof content === "string" ? normalizeEscapedLineBreaks(content) : "";
 
     if (!title || !normalizedContent) {
@@ -167,6 +171,8 @@ async function startServer() {
         content: normalizedContent,
         images,
         quote,
+        quoteText,
+        quoteAuthor,
         sections,
         hashtags,
       });
@@ -187,6 +193,7 @@ async function startServer() {
         reason: result.reason,
         message: result.message,
         url: result.postUrl,
+        editorUrl: naverEditorUrl,
         contentLength: result.contentLength,
       });
     } catch (error: any) {
