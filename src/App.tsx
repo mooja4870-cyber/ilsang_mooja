@@ -23,15 +23,49 @@ import {
 } from 'lucide-react';
 import { cn } from './lib/utils';
 import { LOCATIONS, PURPOSES, UserInput, BlogPost } from './types';
-import { generateBlogPost } from './services/geminiService';
 import axios from 'axios';
 
 // 백엔드 주소 관리 (localStorage 우선)
-const DEFAULT_BACKEND = "http://localhost:3000";
+const LOCAL_BACKEND = "http://localhost:3000";
+const getDefaultBackend = () => {
+  if (typeof window === 'undefined') return LOCAL_BACKEND;
+  const host = window.location.hostname;
+  if (host === 'localhost' || host === '127.0.0.1') return LOCAL_BACKEND;
+  return window.location.origin;
+};
+const DEFAULT_BACKEND = getDefaultBackend();
 const getStoredBackend = () => {
   if (typeof window === 'undefined') return DEFAULT_BACKEND;
   return localStorage.getItem('NAVER_BLOG_BACKEND_URL') || DEFAULT_BACKEND;
 };
+
+async function discoverBackendUrl() {
+  const candidates = [
+    getStoredBackend(),
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+  ];
+
+  for (const url of candidates) {
+    try {
+      const response = await fetch(`${url}/api/config`, {
+        method: 'GET',
+        headers: { 'Cache-Control': 'no-cache' },
+        signal: AbortSignal.timeout(3000),
+      });
+      if (response.ok) {
+        const data = await response.json();
+        if (data.geminiEnabled || data.geminiApiKey) {
+          return url;
+        }
+      }
+    } catch {
+      // try next candidate
+    }
+  }
+
+  return DEFAULT_BACKEND;
+}
 
 const getApiUrl = (path: string) => {
   const base = getStoredBackend().replace(/\/$/, "");
@@ -525,7 +559,8 @@ export default function App() {
   const [isBackendReady, setIsBackendReady] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isMixedErrorOpen, setIsMixedErrorOpen] = useState(false);
-  const [serverConfig, setServerConfig] = useState<{ geminiApiKey?: string }>({});
+  const [serverConfig, setServerConfig] = useState<{ geminiEnabled?: boolean; geminiRetryAfterSeconds?: number }>({});
+  const [quotaCooldownUntil, setQuotaCooldownUntil] = useState(0);
 
   // 백엔드 상태 주기적 체크
   const checkBackend = useCallback(async () => {
@@ -535,11 +570,12 @@ export default function App() {
         headers: { 'Bypass-Tunnel-Reminder': 'true' }
       });
       if (resp.status === 200) {
-        setIsBackendReady(true);
-        if (resp.data?.geminiApiKey) {
-          setServerConfig(resp.data);
-          // 전역 window 객체에도 백업용으로 저장
-          (window as any).GEMINI_API_KEY = resp.data.geminiApiKey;
+        const config = resp.data || {};
+        const geminiEnabled = Boolean(config.geminiEnabled);
+        setServerConfig(config);
+        setIsBackendReady(geminiEnabled);
+        if (typeof config.geminiRetryAfterSeconds === 'number' && config.geminiRetryAfterSeconds > 0) {
+          setQuotaCooldownUntil(Date.now() + config.geminiRetryAfterSeconds * 1000);
         }
       } else {
         setIsBackendReady(false);
@@ -628,6 +664,34 @@ export default function App() {
     setIsStep1Confirmed(true);
   };
 
+  const requestGeneratedPost = async (input: UserInput): Promise<BlogPost> => {
+    try {
+      const response = await axios.post(getApiUrl('/api/generate-blog'), input, {
+        timeout: 120000,
+        headers: { 'Bypass-Tunnel-Reminder': 'true' }
+      });
+      const post = response.data?.post;
+      if (!post) {
+        throw new Error('AI 생성 결과가 비어 있습니다.');
+      }
+      return post as BlogPost;
+    } catch (error: any) {
+      if (axios.isAxiosError(error)) {
+        if (!error.response) {
+          setIsMixedErrorOpen(true);
+        }
+        const serverCode = error?.response?.data?.code || error?.response?.data?.reason || '';
+        const serverMessage = error?.response?.data?.message || error.message || '블로그 생성 중 오류가 발생했습니다.';
+        const retryAfterSeconds = Number(error?.response?.data?.retryAfterSeconds || 0);
+        const wrapped = new Error(serverMessage) as any;
+        if (serverCode) wrapped.code = serverCode;
+        if (retryAfterSeconds > 0) wrapped.retryAfterSeconds = retryAfterSeconds;
+        throw wrapped;
+      }
+      throw error;
+    }
+  };
+
   const publishGeneratedPost = async (post: BlogPost) => {
     try {
       const structuredSections = buildStructuredSections(post.sections, images.length);
@@ -678,6 +742,15 @@ export default function App() {
       alert('Step 1 확인 버튼을 먼저 눌러주세요.');
       return;
     }
+    if (!isBackendReady) {
+      alert('백엔드 연결이 필요합니다. 연결 설정에서 서버 주소를 확인해주세요.');
+      return;
+    }
+    const cooldownSeconds = Math.max(0, Math.ceil((quotaCooldownUntil - Date.now()) / 1000));
+    if (cooldownSeconds > 0) {
+      alert(`Gemini 사용량 보호 대기 중입니다. 약 ${cooldownSeconds}초 후 다시 시도해 주세요.`);
+      return;
+    }
 
     const finalLocations = isOtherLocation 
       ? [...selectedLocations, otherLocation].filter(l => l !== '')
@@ -726,7 +799,7 @@ export default function App() {
         sections: finalSections,
         images
       };
-      const post = await generateBlogPost(input, serverConfig.geminiApiKey);
+      const post = await requestGeneratedPost(input);
       setIsPublishing(true);
       const publishData = await publishGeneratedPost(post);
       setIsPublishing(false);
@@ -755,12 +828,23 @@ export default function App() {
       setIsPublishing(false);
       
       const errorMessage = error?.message || '';
+      const errorCode = error?.code || '';
+      const retryAfterSeconds = Number(error?.retryAfterSeconds || 0);
       const serverMessage = error?.response?.data?.message;
       
-      if (errorMessage.includes('API_KEY')) {
+      if (errorCode === 'API_KEY_MISSING' || errorCode === 'API_KEY_INVALID' || errorMessage.includes('API_KEY')) {
         alert('Gemini API 키가 올바르지 않습니다. .env.local 설정을 확인해주세요.');
-      } else if (errorMessage.includes('Too Many Requests') || errorMessage.includes('429')) {
-        alert('Gemini API 사용량을 초과했습니다. 잠시 후 다시 시도해 주세요.');
+      } else if (errorCode === 'QUOTA_EXCEEDED' || errorCode === 'RATE_LIMITED' || errorMessage.includes('Too Many Requests') || errorMessage.includes('429')) {
+        if (retryAfterSeconds > 0) {
+          setQuotaCooldownUntil(Date.now() + retryAfterSeconds * 1000);
+          alert(`Gemini API 사용량을 초과했습니다. 약 ${retryAfterSeconds}초 후 다시 시도해 주세요.`);
+        } else {
+          alert('Gemini API 사용량을 초과했습니다. 잠시 후 다시 시도해 주세요.');
+        }
+      } else if (errorCode === 'MODEL_UNAVAILABLE') {
+        alert('기존 Gemini 모델이 종료되어 최신 모델로 전환 중입니다. 잠시 후 다시 시도해 주세요.');
+      } else if (errorCode === 'PROMPT_BLOCKED') {
+        alert(errorMessage || '입력 내용이 안전 정책에 의해 차단되었습니다. 표현을 완화해서 다시 시도해 주세요.');
       } else {
         alert(serverMessage || errorMessage || '블로그 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.');
       }

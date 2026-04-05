@@ -376,8 +376,17 @@ function getBrowserExecutablePath() {
   const explicitPath = process.env.BROWSER_EXECUTABLE_PATH || process.env.AUTO_POST_CHROME_PATH;
   if (explicitPath && fs.existsSync(explicitPath)) return explicitPath;
 
-  const macChrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-  if (fs.existsSync(macChrome)) return macChrome;
+  const candidates = [
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", // macOS
+    "/usr/bin/google-chrome", // Linux (Debian/Ubuntu)
+    "/usr/bin/google-chrome-stable", // Linux (Debian/Ubuntu stable package)
+    "/usr/bin/chromium-browser", // Linux (Chromium)
+    "/usr/bin/chromium", // Linux (Chromium)
+  ];
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
 
   return "";
 }
