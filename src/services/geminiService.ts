@@ -130,7 +130,7 @@ export async function generateBlogPost(input: UserInput, dynamicApiKey?: string)
   for (let attempt = 0; attempt <= MAX_QUOTA_RETRY_COUNT; attempt += 1) {
     try {
       const response: GenerateContentResponse = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
+        model: "gemini-1.5-flash",
         contents: { 
           parts: [textPart, ...imageParts] 
         },
