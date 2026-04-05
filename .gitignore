@@ -1,6 +1,6 @@
 node_modules/
 build/
-dist/
+# dist/ 는 Streamlit Cloud 배포를 위해 커밋합니다
 coverage/
 .DS_Store
 *.log
