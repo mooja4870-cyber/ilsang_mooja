@@ -529,7 +529,10 @@ export default function App() {
   // 백엔드 상태 주기적 체크
   const checkBackend = useCallback(async () => {
     try {
-      const resp = await axios.get(getApiUrl('/api/config'), { timeout: 2000 });
+      const resp = await axios.get(getApiUrl('/api/config'), { 
+        timeout: 2000,
+        headers: { 'Bypass-Tunnel-Reminder': 'true' }
+      });
       if (resp.status === 200) setIsBackendReady(true);
       else setIsBackendReady(false);
     } catch {
@@ -645,6 +648,8 @@ export default function App() {
         sections: structuredSections,
         hashtags,
         blogType: 'Naver',
+      }, {
+        headers: { 'Bypass-Tunnel-Reminder': 'true' }
       });
 
       setPublishResult(response.data);
