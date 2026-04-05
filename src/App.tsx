@@ -12,17 +12,30 @@ import {
   X, 
   Plus,
   ExternalLink,
-  Sparkles
+  Sparkles,
+  Settings,
+  Wifi,
+  WifiOff,
+  AlertCircle,
+  HelpCircle,
+  ChevronRight,
+  ShieldCheck
 } from 'lucide-react';
 import { cn } from './lib/utils';
 import { LOCATIONS, PURPOSES, UserInput, BlogPost } from './types';
 import { generateBlogPost } from './services/geminiService';
 import axios from 'axios';
 
-// Streamlit 등 특수 환경에서 baseURL이 about:srcdoc일 때 발생하는 URL 오류 방지
-const API_BASE = "http://localhost:3000";
+// 백엔드 주소 관리 (localStorage 우선)
+const DEFAULT_BACKEND = "http://localhost:3000";
+const getStoredBackend = () => {
+  if (typeof window === 'undefined') return DEFAULT_BACKEND;
+  return localStorage.getItem('NAVER_BLOG_BACKEND_URL') || DEFAULT_BACKEND;
+};
+
 const getApiUrl = (path: string) => {
-  return `${API_BASE}${path.startsWith('/') ? path : '/' + path}`;
+  const base = getStoredBackend().replace(/\/$/, "");
+  return `${base}${path.startsWith('/') ? path : '/' + path}`;
 };
 
 const MAX_IMAGES = 10;
@@ -507,6 +520,38 @@ export default function App() {
   const [publishResult, setPublishResult] = useState<{ success: boolean; url: string; editorUrl?: string } | null>(null);
   const [isStep1Confirmed, setIsStep1Confirmed] = useState(false);
 
+  // --- 신규 상태 ---
+  const [backendUrl, setBackendUrl] = useState(getStoredBackend());
+  const [isBackendReady, setIsBackendReady] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isMixedErrorOpen, setIsMixedErrorOpen] = useState(false);
+
+  // 백엔드 상태 주기적 체크
+  const checkBackend = useCallback(async () => {
+    try {
+      const resp = await axios.get(getApiUrl('/api/config'), { timeout: 2000 });
+      if (resp.status === 200) setIsBackendReady(true);
+      else setIsBackendReady(false);
+    } catch {
+      setIsBackendReady(false);
+    }
+  }, [backendUrl]);
+
+  React.useEffect(() => {
+    checkBackend();
+    const timer = setInterval(checkBackend, 5000);
+    return () => clearInterval(timer);
+  }, [checkBackend]);
+
+  const handleSaveBackend = (url: string) => {
+    const formatted = url.trim().replace(/\/$/, "");
+    localStorage.setItem('NAVER_BLOG_BACKEND_URL', formatted);
+    setBackendUrl(formatted);
+    setIsSettingsOpen(false);
+    setTimeout(checkBackend, 500);
+  };
+  // ----------------
+
   const onDrop = useCallback(async (acceptedFiles: File[], fileRejections: FileRejection[]) => {
     const incomingCount = acceptedFiles.length + fileRejections.length;
     if (images.length + incomingCount > MAX_IMAGES || fileRejections.length > 0) {
@@ -572,37 +617,45 @@ export default function App() {
   };
 
   const publishGeneratedPost = async (post: BlogPost) => {
-    const structuredSections = buildStructuredSections(post.sections, images.length);
-    const hashtags = buildHashtags(post.seoKeywords);
-    const quoteSection = parseQuoteSection(post.quote || '');
-    const contentLines: string[] = [];
+    try {
+      const structuredSections = buildStructuredSections(post.sections, images.length);
+      const hashtags = buildHashtags(post.seoKeywords);
+      const quoteSection = parseQuoteSection(post.quote || '');
+      const contentLines: string[] = [];
 
-    if (quoteSection.quote) {
-      contentLines.push(`"${quoteSection.quote}"\n- ${quoteSection.philosopher} -`);
+      if (quoteSection.quote) {
+        contentLines.push(`"${quoteSection.quote}"\n- ${quoteSection.philosopher} -`);
+      }
+
+      structuredSections.forEach((section) => {
+        contentLines.push(`■ ${section.subtitle} ■\n${section.body}`);
+      });
+
+      if (hashtags.length > 0) {
+        contentLines.push(hashtags.map((tag) => `#${tag}`).join(' '));
+      }
+
+      const response = await axios.post(getApiUrl('/api/publish'), {
+        title: post.title,
+        content: contentLines.join('\n\n'),
+        images,
+        quote: `"${quoteSection.quote}"\n- ${quoteSection.philosopher} -`,
+        quoteText: quoteSection.quote,
+        quoteAuthor: quoteSection.philosopher,
+        sections: structuredSections,
+        hashtags,
+        blogType: 'Naver',
+      });
+
+      setPublishResult(response.data);
+      return response.data as { success?: boolean; url?: string; editorUrl?: string };
+    } catch (error: any) {
+      if (axios.isAxiosError(error) && !error.response) {
+        // 네트워크 에러 (Mixed Content 차단 포함)
+        setIsMixedErrorOpen(true);
+      }
+      throw error;
     }
-
-    structuredSections.forEach((section) => {
-      contentLines.push(`■ ${section.subtitle} ■\n${section.body}`);
-    });
-
-    if (hashtags.length > 0) {
-      contentLines.push(hashtags.map((tag) => `#${tag}`).join(' '));
-    }
-
-    const response = await axios.post(getApiUrl('/api/publish'), {
-      title: post.title,
-      content: contentLines.join('\n\n'),
-      images,
-      quote: `"${quoteSection.quote}"\n- ${quoteSection.philosopher} -`,
-      quoteText: quoteSection.quote,
-      quoteAuthor: quoteSection.philosopher,
-      sections: structuredSections,
-      hashtags,
-      blogType: 'Naver',
-    });
-
-    setPublishResult(response.data);
-    return response.data as { success?: boolean; url?: string; editorUrl?: string };
   };
 
   const handleGenerate = async () => {
@@ -721,20 +774,41 @@ export default function App() {
       {/* Header */}
       <header className="sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b border-gray-100 px-6 py-4">
         <div className="max-w-2xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-black rounded-lg flex items-center justify-center">
-              <Sparkles className="w-5 h-5 text-white" />
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 bg-black rounded-lg flex items-center justify-center">
+                <Sparkles className="w-5 h-5 text-white" />
+              </div>
+              <h1 className="text-xl font-bold tracking-tight">AI Blog Writer</h1>
             </div>
-            <h1 className="text-xl font-bold tracking-tight">AI Blog Writer</h1>
+            
+            {/* 연결 상태 표시 */}
+            <div className={cn(
+              "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all",
+              isBackendReady ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"
+            )}>
+              <div className={cn("w-1.5 h-1.5 rounded-full", isBackendReady ? "bg-green-500 animate-pulse" : "bg-red-500")} />
+              {isBackendReady ? "CONNECTED" : "DISCONNECTED"}
+            </div>
           </div>
-          {generatedPost && (
+
+          <div className="flex items-center gap-3">
             <button
-              onClick={() => setGeneratedPost(null)}
-              className="text-sm font-medium text-gray-500 hover:text-black transition-colors"
+              onClick={() => setIsSettingsOpen(true)}
+              className="p-2 text-gray-500 hover:text-black hover:bg-gray-100 rounded-lg transition-all"
+              title="연결 설정"
             >
-              새로 만들기
+              <Settings className="w-5 h-5" />
             </button>
-          )}
+            {generatedPost && (
+              <button
+                onClick={() => setGeneratedPost(null)}
+                className="text-sm font-medium text-gray-500 hover:text-black transition-colors"
+              >
+                새로 만들기
+              </button>
+            )}
+          </div>
         </div>
       </header>
 
@@ -1099,6 +1173,131 @@ export default function App() {
           </motion.div>
         )}
       </main>
+
+      {/* 설정 모달 */}
+      <AnimatePresence>
+        {isSettingsOpen && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/40 backdrop-blur-sm">
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white w-full max-w-sm rounded-[32px] overflow-hidden shadow-2xl"
+            >
+              <div className="p-8 space-y-6">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 bg-gray-100 rounded-2xl flex items-center justify-center">
+                      <Settings className="w-5 h-5" />
+                    </div>
+                    <h3 className="text-xl font-bold">연결 설정</h3>
+                  </div>
+                  <button onClick={() => setIsSettingsOpen(false)} className="p-2 hover:bg-gray-100 rounded-full transition-colors">
+                    <X className="w-5 h-5 text-gray-400" />
+                  </button>
+                </div>
+
+                <div className="space-y-4">
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-gray-400 uppercase tracking-wider pl-1">백엔드 서버 주소</label>
+                    <div className="relative">
+                      <input 
+                        type="text" 
+                        value={backendUrl}
+                        onChange={(e) => setBackendUrl(e.target.value)}
+                        placeholder="http://localhost:3000"
+                        className="w-full px-5 py-4 bg-gray-50 border border-gray-100 rounded-2xl focus:outline-none focus:ring-2 focus:ring-black transition-all font-mono text-sm"
+                      />
+                    </div>
+                  </div>
+                  
+                  <div className="bg-blue-50 p-4 rounded-2xl space-y-2">
+                    <p className="text-xs leading-relaxed text-blue-700 font-medium">
+                      • 로컬 실행 시: <code className="bg-blue-100 px-1 rounded">http://localhost:3000</code><br/>
+                      • 터널 사용 시: <code className="bg-blue-100 px-1 rounded">https://xxxx.ngrok.io</code>
+                    </p>
+                  </div>
+                </div>
+
+                <button 
+                  onClick={() => handleSaveBackend(backendUrl)}
+                  className="w-full py-4 bg-black text-white rounded-2xl font-bold hover:opacity-90 transition-all shadow-lg shadow-black/20"
+                >
+                  설정 저장하기
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* 보안 차단 안내 모달 (Mixed Content) */}
+      <AnimatePresence>
+        {isMixedErrorOpen && (
+          <div className="fixed inset-0 z-[110] flex items-center justify-center p-6 bg-black/60 backdrop-blur-md">
+            <motion.div 
+              initial={{ y: 40, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: 40, opacity: 0 }}
+              className="bg-white w-full max-w-md rounded-[40px] overflow-hidden shadow-2xl border border-red-50"
+            >
+              <div className="p-8 space-y-8">
+                <div className="flex flex-col items-center text-center space-y-4">
+                  <div className="w-16 h-16 bg-red-100 rounded-3xl flex items-center justify-center">
+                    <AlertCircle className="w-8 h-8 text-red-500" />
+                  </div>
+                  <div className="space-y-2">
+                    <h3 className="text-2xl font-black tracking-tight">앗! 브라우저가 차단했습니다</h3>
+                    <p className="text-gray-500 font-medium leading-relaxed">
+                      웹사이트(HTTPS)가 로컬 서버(HTTP)를 호출하려고 할 때 보안상 차단되었습니다.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="bg-gray-50 rounded-[32px] p-6 space-y-5">
+                  <h4 className="font-bold flex items-center gap-2 text-sm text-gray-700">
+                    <ShieldCheck className="w-4 h-4 text-green-500" /> 
+                    지금 바로 해결하는 방법
+                  </h4>
+                  
+                  <div className="space-y-4">
+                    <div className="flex gap-4">
+                      <div className="flex-shrink-0 w-6 h-6 bg-black text-white rounded-full flex items-center justify-center text-xs font-bold">1</div>
+                      <p className="text-sm text-gray-600 leading-snug">
+                        주소창 오른쪽의 <b>'차단된 스크립트'</b> 아이콘(혹은 설정 아이콘)을 클릭하세요.
+                      </p>
+                    </div>
+                    <div className="flex gap-4">
+                      <div className="flex-shrink-0 w-6 h-6 bg-black text-white rounded-full flex items-center justify-center text-xs font-bold">2</div>
+                      <p className="text-sm text-gray-600 leading-snug">
+                        <b>'안전하지 않은 콘텐츠 허용'</b>을 선택하고 페이지를 새로고침하세요.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex gap-3">
+                  <button 
+                    onClick={() => setIsMixedErrorOpen(false)}
+                    className="flex-1 py-4 bg-gray-100 text-gray-600 rounded-2xl font-bold hover:bg-gray-200 transition-all"
+                  >
+                    알겠습니다
+                  </button>
+                  <button 
+                    onClick={() => {
+                      setIsMixedErrorOpen(false);
+                      setIsSettingsOpen(true);
+                    }}
+                    className="flex-1 py-4 bg-black text-white rounded-2xl font-bold hover:opacity-90 transition-all flex items-center justify-center gap-2"
+                  >
+                    설정 열기 <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
